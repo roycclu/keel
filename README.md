@@ -1,9 +1,9 @@
 # Keel
 
-**An open-source framework for human-quality-gated agentic contribution pipelines.**
+**An open-source framework for human-quality-gated agentic task pipelines.**
 
 Agents are good at discovery and drafting. They are bad at being trusted with an
-irreversible `POST`. Keel splits every contribution into an *agentic* phase
+irreversible `POST`. Keel splits every task into an *agentic* phase
 (find the gap, research it, draft the fix) and a *deterministic* phase (validate,
 gate, submit), and puts a human quality gate on the seam between them. Nothing
 reaches a public commons without passing human review.
@@ -92,29 +92,29 @@ Traces contain prompts, structured model outputs, search snippets, bounded tool
 results, and workflow decisions. Keep the Langfuse project private and configure its
 retention accordingly. API credentials and authorization headers are never included.
 
-Inspect one contribution's runbook steps once, continuously, or as typed JSON:
+Inspect one task's runbook steps once, continuously, or as typed JSON:
 
 ```bash
-keel workflow <contribution-id>
-keel workflow <contribution-id> --watch
-keel workflow <contribution-id> --json
+keel workflow <task-id>
+keel workflow <task-id> --watch
+keel workflow <task-id> --json
 ```
 
-List the deterministic Langfuse trace IDs associated with a contribution:
+List the deterministic Langfuse trace IDs associated with a task:
 
 ```bash
-keel traces <contribution-id>
+keel traces <task-id>
 ```
 
 Ask an on-demand question about a past decision:
 
 ```bash
-keel investigate <contribution-id> \
+keel investigate <task-id> \
   --question "Why did the workflow reject these sources?"
 ```
 
 The investigation reads only relevant retained observations. Its idempotency key is
-derived from the contribution, source trace IDs, normalized question, and investigator
+derived from the task, source trace IDs, normalized question, and investigator
 version. Repeating the same question reuses the Langfuse result instead of calling
 OpenAI again.
 

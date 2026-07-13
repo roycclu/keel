@@ -2,10 +2,10 @@
 
 This is the ONLY place the pieces are wired together (AGENTS.md keeps the core ignorant
 of Wikipedia; here we choose Wikipedia). Commands:
-  discover  find citation-needed tags and create contributions
-  run       drive actionable contributions one checkpoint at a time
+  discover  find citation-needed tags and create tasks
+  run       drive actionable tasks one checkpoint at a time
   review    the human quality gate: approve / reject pending proposals
-  status    show contributions by state
+  status    show tasks by state
   workflow  show durable runbook step progress
 """
 
@@ -21,11 +21,11 @@ import httpx
 
 from keel.config import Settings
 from keel.core.runtime import Budget, RunContext
-from keel.core.states import TERMINAL, ContributionState as S
+from keel.core.states import TERMINAL, TaskState as S
 from keel.core.states import transition
 from keel.core.protocols import QuerySpec
 from keel.core.types import (
-    Contribution,
+    Task,
     GateDecision,
     GateVerdict,
     Provenance,
@@ -51,7 +51,7 @@ from keel.runbooks.status import build_workflow_status, render_workflow_status
 from keel.runbooks.wikipedia_citation import WikipediaCitationWorkflow
 from keel.skills.investigate import ExplainDecision, InvestigationInput
 from keel.store.sqlite_store import SqliteStateStore
-from keel.wikipedia.models import wiki_contribution_type
+from keel.wikipedia.models import wiki_task_type
 from keel.wikipedia.target import WikipediaTarget
 
 
@@ -68,7 +68,7 @@ class App:
         )
         self.target = WikipediaTarget(settings)
         self.llm = OpenAICompatibleClient(settings, http)
-        self.store = SqliteStateStore(settings.sqlite_path, wiki_contribution_type())
+        self.store = SqliteStateStore(settings.sqlite_path, wiki_task_type())
         self.workflow = WikipediaCitationWorkflow(self.target)
 
     def _observer(self, run_id: str) -> Observer:
@@ -76,16 +76,16 @@ class App:
             return LangfuseObserver(run_id, self._langfuse)
         return JsonlObserver(run_id=run_id, stream=sys.stderr)
 
-    def _ctx(self, c: Contribution) -> RunContext:
+    def _ctx(self, task: Task) -> RunContext:
         return RunContext(
-            run_id=f"contribution:{c.id}:v{c.version}",
+            run_id=f"task:{task.id}:v{task.version}",
             store=self.store,
             target=self.target,
             gate=AutoGateProvider(),
             llm=self.llm,
             http=self.http,
             settings=self.settings,
-            observer=self._observer(f"contribution:{c.id}:v{c.version}"),
+            observer=self._observer(f"task:{task.id}:v{task.version}"),
             budget=Budget(total=self.settings.per_run_token_budget),
         )
 
@@ -101,13 +101,13 @@ class App:
             observer=self._observer("discover"),
             budget=Budget(total=None),
         )
-        contribs = await self.workflow.discover(
+        tasks = await self.workflow.discover(
             ctx, limit_pages=limit_pages, tags_per_page=tags_per_page
         )
-        for c in contribs:
-            await self.store.create(c)
-            print(f"discovered {c.id[:8]}  {c.opportunity.summary}")
-        print(f"\n{len(contribs)} contribution(s) created.")
+        for task in tasks:
+            await self.store.create(task)
+            print(f"discovered {task.id[:8]}  {task.opportunity.summary}")
+        print(f"\n{len(tasks)} task(s) created.")
 
     async def run(self, max_steps: int) -> None:
         executor = Executor(self.store, self.workflow, self._ctx)
@@ -122,12 +122,12 @@ class App:
             print("nothing pending review.")
             return
         for stale in pending:
-            c = await self.store.load(stale.id)  # reload for a fresh version
-            gate = c.pending_gate
+            task = await self.store.load(stale.id)  # reload for a fresh version
+            gate = task.pending_gate
             if gate is None:
                 continue
             print("=" * 72)
-            print(f"{c.id[:8]}  {c.opportunity.summary}")
+            print(f"{task.id[:8]}  {task.opportunity.summary}")
             print("-" * 72)
             print(gate.brief)
             print("-" * 72)
@@ -141,9 +141,9 @@ class App:
                 continue
             verdict = GateVerdict.APPROVE if choice == "a" else GateVerdict.REJECT
             notes = await asyncio.to_thread(input, "notes (optional): ")
-            c.gate_decisions.append(
+            task.gate_decisions.append(
                 GateDecision(
-                    contribution_id=c.id,
+                    task_id=task.id,
                     verdict=verdict,
                     reviewer=f"human:{reviewer}",
                     notes=notes or None,
@@ -155,17 +155,17 @@ class App:
                     ),
                 )
             )
-            c.pending_gate = None
+            task.pending_gate = None
             transition(
-                c,
+                task,
                 S.APPROVED if verdict == GateVerdict.APPROVE else S.REJECTED,
                 runbook="review@1",
                 run_id="review",
                 step="human_gate",
                 reason=f"{verdict} by {reviewer}",
             )
-            await self.store.save(c, c.version)
-            executions = await self.store.list_steps(c.id)
+            await self.store.save(task, task.version)
+            executions = await self.store.list_steps(task.id)
             waiting = next(
                 (
                     item
@@ -184,16 +184,16 @@ class App:
             print(f"recorded: {verdict}\n")
 
     async def status(self) -> None:
-        contribs = await self.store.query(QuerySpec(target=self.target.id, limit=500))
+        tasks = await self.store.query(QuerySpec(target=self.target.id, limit=500))
         by_state: dict[str, int] = {}
-        for c in contribs:
-            by_state[str(c.state)] = by_state.get(str(c.state), 0) + 1
-        for c in contribs:
-            ref = f"  revid={c.submission.external_ref}" if c.submission else ""
-            executions = await self.store.list_steps(c.id)
-            workflow = build_workflow_status(c, self.workflow.steps, executions)
+        for task in tasks:
+            by_state[str(task.state)] = by_state.get(str(task.state), 0) + 1
+        for task in tasks:
+            ref = f"  revid={task.submission.external_ref}" if task.submission else ""
+            executions = await self.store.list_steps(task.id)
+            workflow = build_workflow_status(task, self.workflow.steps, executions)
             step = workflow.current_step or "complete"
-            print(f"{c.id[:8]}  {str(c.state):13}  {step:28}  {c.opportunity.summary}{ref}")
+            print(f"{task.id[:8]}  {str(task.state):13}  {step:28}  {task.opportunity.summary}{ref}")
         print("\n" + "  ".join(f"{k}={v}" for k, v in sorted(by_state.items())))
 
     async def workflow_status(
@@ -204,12 +204,12 @@ class App:
         json_output: bool,
         interval: float,
     ) -> None:
-        contribution = await self._load_contribution(reference)
+        task = await self._load_task(reference)
         last_output: str | None = None
         while True:
-            contribution = await self.store.load(contribution.id)
-            executions = await self.store.list_steps(contribution.id)
-            status = build_workflow_status(contribution, self.workflow.steps, executions)
+            task = await self.store.load(task.id)
+            executions = await self.store.list_steps(task.id)
+            status = build_workflow_status(task, self.workflow.steps, executions)
             output = (
                 status.model_dump_json(indent=2) if json_output else render_workflow_status(status)
             )
@@ -218,29 +218,29 @@ class App:
                     print("\033[2J\033[H", end="")
                 print(output, flush=True)
                 last_output = output
-            if not watch or contribution.state in TERMINAL:
+            if not watch or task.state in TERMINAL:
                 return
             await asyncio.sleep(interval)
 
     async def traces(self, reference: str) -> None:
-        contribution = await self._load_contribution(reference)
-        for run_id in await self._run_ids(contribution):
+        task = await self._load_task(reference)
+        for run_id in await self._run_ids(task):
             trace_id = langfuse_trace_id(run_id)
             print(f"{trace_id}  {run_id}")
 
     async def investigate(self, reference: str, question: str) -> None:
         if self._langfuse is None:
             raise RuntimeError("investigation requires KEEL_OBSERVABILITY_BACKEND=langfuse")
-        contribution = await self._load_contribution(reference)
-        executions = await self.store.list_steps(contribution.id)
-        run_ids = await self._run_ids(contribution)
+        task = await self._load_task(reference)
+        executions = await self.store.list_steps(task.id)
+        run_ids = await self._run_ids(task)
         trace_ids = [langfuse_trace_id(run_id) for run_id in run_ids]
         if not trace_ids:
-            raise RuntimeError("this contribution has no correlated workflow traces")
+            raise RuntimeError("this task has no correlated workflow traces")
 
         version = ExplainDecision.version
         material = "\n".join(
-            [contribution.id, *sorted(trace_ids), " ".join(question.lower().split()), version]
+            [task.id, *sorted(trace_ids), " ".join(question.lower().split()), version]
         )
         key = hashlib.sha256(material.encode()).hexdigest()
         investigation_run_id = f"investigation:{key}"
@@ -287,7 +287,7 @@ class App:
         )
         report = await self._explain_decision(
             InvestigationInput(
-                contribution_id=contribution.id,
+                task_id=task.id,
                 question=question,
                 observations=relevant,
                 source_trace_ids=trace_ids,
@@ -304,10 +304,10 @@ class App:
     ) -> DecisionExplanation:
         return await ExplainDecision().run(inp, ctx.skill_ctx())
 
-    async def _run_ids(self, contribution: Contribution) -> list[str]:
-        executions = await self.store.list_steps(contribution.id)
+    async def _run_ids(self, task: Task) -> list[str]:
+        executions = await self.store.list_steps(task.id)
         candidates = [item.run_id for item in executions]
-        candidates.extend(item.run_id for item in contribution.history if item.run_id)
+        candidates.extend(item.run_id for item in task.history if item.run_id)
         return list(dict.fromkeys(candidates))
 
     @staticmethod
@@ -330,16 +330,16 @@ class App:
             for limitation in report.limitations:
                 print(f"- {limitation}")
 
-    async def _load_contribution(self, reference: str) -> Contribution:
+    async def _load_task(self, reference: str) -> Task:
         try:
             return await self.store.load(reference)
         except KeyError:
-            contributions = await self.store.query(QuerySpec(target=self.target.id, limit=10_000))
-            matches = [item for item in contributions if item.id.startswith(reference)]
+            tasks = await self.store.query(QuerySpec(target=self.target.id, limit=10_000))
+            matches = [item for item in tasks if item.id.startswith(reference)]
             if not matches:
-                raise KeyError(f"no contribution matching {reference!r}")
+                raise KeyError(f"no task matching {reference!r}")
             if len(matches) > 1:
-                raise KeyError(f"ambiguous contribution prefix {reference!r}")
+                raise KeyError(f"ambiguous task prefix {reference!r}")
             return matches[0]
 
 
@@ -359,15 +359,15 @@ async def _amain(args: argparse.Namespace) -> None:
             await app.status()
         elif args.cmd == "workflow":
             await app.workflow_status(
-                args.contribution_id,
+                args.task_id,
                 watch=args.watch,
                 json_output=args.json,
                 interval=args.interval,
             )
         elif args.cmd == "traces":
-            await app.traces(args.contribution_id)
+            await app.traces(args.task_id)
         elif args.cmd == "investigate":
-            await app.investigate(args.contribution_id, args.question)
+            await app.investigate(args.task_id, args.question)
 
 
 def _positive_float(value: str) -> float:
@@ -385,17 +385,17 @@ def main() -> None:
     p_disc.add_argument("--limit", type=int, default=5, help="max pages to scan")
     p_disc.add_argument("--tags-per-page", type=int, default=1)
 
-    p_run = sub.add_parser("run", help="drive actionable contributions")
+    p_run = sub.add_parser("run", help="drive actionable tasks")
     p_run.add_argument("--max-steps", type=int, default=100)
     p_run.add_argument("--dry-run", action="store_true", help="render + log edits, post nothing")
 
     p_rev = sub.add_parser("review", help="human quality gate")
     p_rev.add_argument("--reviewer", default="cli")
 
-    sub.add_parser("status", help="show contributions by state")
+    sub.add_parser("status", help="show tasks by state")
 
     p_workflow = sub.add_parser("workflow", help="show runbook step status")
-    p_workflow.add_argument("contribution_id", help="full contribution ID or unique prefix")
+    p_workflow.add_argument("task_id", help="full task ID or unique prefix")
     p_workflow.add_argument("--watch", action="store_true", help="refresh until terminal")
     p_workflow.add_argument("--json", action="store_true", help="emit the typed status as JSON")
     p_workflow.add_argument(
@@ -405,13 +405,13 @@ def main() -> None:
         help="watch interval in seconds",
     )
 
-    p_traces = sub.add_parser("traces", help="show Langfuse trace IDs for a contribution")
-    p_traces.add_argument("contribution_id", help="full contribution ID or unique prefix")
+    p_traces = sub.add_parser("traces", help="show Langfuse trace IDs for a task")
+    p_traces.add_argument("task_id", help="full task ID or unique prefix")
 
     p_investigate = sub.add_parser(
         "investigate", help="explain a decision from retained Langfuse traces"
     )
-    p_investigate.add_argument("contribution_id", help="full contribution ID or unique prefix")
+    p_investigate.add_argument("task_id", help="full task ID or unique prefix")
     p_investigate.add_argument("--question", required=True, help="decision question to answer")
 
     args = parser.parse_args()

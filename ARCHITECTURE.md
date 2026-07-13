@@ -1,8 +1,8 @@
 # Keel
 
-**An open-source framework for human-quality-gated agentic contribution pipelines.**
+**An open-source framework for human-quality-gated agentic task pipelines.**
 
-> Agents are good at discovery and drafting. They are bad at being trusted with an irreversible `POST`. Keel splits every contribution into an *agentic* phase (find the gap, research it, draft the fix) and a *deterministic* phase (validate, gate, submit), and puts a human quality gate on the seam between them. Nothing reaches a public commons, including Wikipedia, GitHub, or OpenStreetMap, without passing human review.
+> Agents are good at discovery and drafting. They are bad at being trusted with an irreversible `POST`. Keel splits every task into an *agentic* phase (find the gap, research it, draft the fix) and a *deterministic* phase (validate, gate, submit), and puts a human quality gate on the seam between them. Nothing reaches a public commons, including Wikipedia, GitHub, or OpenStreetMap, without passing human review.
 
 The first target is Wikipedia `[citation needed]` remediation. The architecture is designed so that adding a second target (GitHub issues, OSM, OpenFoodFacts, ArXiv errata) is a *plugin*, not a fork.
 
@@ -27,9 +27,9 @@ These are opinions. They are load-bearing; the rest of the document follows from
 
 2. **The runbook is the unit of trust, not the agent.** A runbook is a named, versioned, deterministic state transition with explicit preconditions, typed I/O, and a quality gate. Agents *invoke* runbooks; they do not *replace* them. You can audit a runbook. You cannot audit "the agent decided to."
 
-3. **Every pipeline is restartable and inspectable.** State lives in a durable store, not in an agent's context window. Any contribution can be resumed from its last committed state after a crash, a deploy, or a week of waiting for human review. This is the Temporal influence: the orchestration is durable; the work is idempotent per step.
+3. **Every pipeline is restartable and inspectable.** State lives in a durable store, not in an agent's context window. Any task can be resumed from its last committed state after a crash, a deploy, or a week of waiting for human review. This is the Temporal influence: the orchestration is durable; the work is idempotent per step.
 
-4. **Human review is a first-class state, not a callback.** "Waiting for a human" is a real, persisted state a contribution can sit in for days. The framework is built around that latency, not around a synchronous `input()`.
+4. **Human review is a first-class state, not a callback.** "Waiting for a human" is a real, persisted state a task can sit in for days. The framework is built around that latency, not around a synchronous `input()`.
 
 5. **The target is a plugin behind a protocol.** Wikipedia-specific knowledge lives in a `WikipediaTarget` module and nowhere else. The core has zero imports from any target. If you `grep core/ -r wikipedia` you get nothing.
 
@@ -67,10 +67,10 @@ The dividing line is the `Proposal` handoff. Above the line, we tolerate creativ
 
 | Term | Meaning |
 |---|---|
-| **Target** | A commons we contribute to (Wikipedia, GitHub, OSM). Implements `ContributionTarget`. |
+| **Target** | A commons we contribute to (Wikipedia, GitHub, OSM). Implements `TaskTarget`. |
 | **Opportunity** | A discovered unit of possible work (one `[citation needed]` tag, one stale issue). |
 | **Proposal** | A drafted, concrete change ready to be evaluated (a specific citation + edit). |
-| **Contribution** | The stateful lifecycle object tracking one Opportunity → Proposal → Submission. |
+| **Task** | The stateful lifecycle object tracking one Opportunity → Proposal → Submission. |
 | **Runbook** | A deterministic, gated state transition. The atom of orchestration. |
 | **Pipeline** | A typed DAG of runbooks for one target. |
 | **Tool** | An atomic, schema'd side-effecting or pure operation. |
@@ -81,11 +81,11 @@ The dividing line is the `Proposal` handoff. Above the line, we tolerate creativ
 
 ## 4. Domain model / ontology
 
-The core abstractions must describe *any* contribution to *any* commons. The insight: every open-source contribution is the same five-noun sentence — **find** an `Opportunity` in a `Target`, gather `Evidence`, draft a `Proposal`, pass a `Gate`, record a `Submission`.
+The core abstractions must describe *any* task to *any* commons. The insight: every open-source task is the same five-noun sentence — **find** an `Opportunity` in a `Target`, gather `Evidence`, draft a `Proposal`, pass a `Gate`, record a `Submission`.
 
 ### 4.1 The five core nouns
 
-- **`Target`** — where contributions go. Owns auth, rate limits, submission mechanics, and the domain vocabulary. *Wikipedia, GitHub, OSM.*
+- **`Target`** — where tasks go. Owns auth, rate limits, submission mechanics, and the domain vocabulary. *Wikipedia, GitHub, OSM.*
 - **`Opportunity`** — a located unit of potential work, with enough locator info to act on it later. *A `[citation needed]` at article "Foo" §2 sentence 4.*
 - **`Evidence`** — researched support for a change: sources, confidence, provenance. *A peer-reviewed paper + a news article backing the claim.*
 - **`Proposal`** — a concrete, target-shaped change derived from Evidence. *The exact wikitext diff inserting `<ref>`.*
@@ -93,7 +93,7 @@ The core abstractions must describe *any* contribution to *any* commons. The ins
 
 And one connective tissue object:
 
-- **`Contribution`** — the durable state machine that threads an Opportunity through Evidence, Proposal, Gate, and Submission. This is the row in the database. Everything else hangs off it.
+- **`Task`** — the durable state machine that threads an Opportunity through Evidence, Proposal, Gate, and Submission. This is the row in the database. Everything else hangs off it.
 
 ### 4.2 Why this generalizes
 
@@ -119,7 +119,7 @@ Language: **Python 3.12+ with `pydantic` v2** for the wire/persisted types and `
 
 ```python
 class TargetId(str): ...            # "wikipedia", "github", "osm"
-class ContributionId(str): ...      # ULID, sortable by creation time
+class TaskId(str): ...      # ULID, sortable by creation time
 
 class Provenance(BaseModel):
     """Where a fact/artifact came from. Every Evidence and Proposal carries this."""
@@ -167,7 +167,7 @@ class Evidence(BaseModel):
 
 ```python
 class Proposal(BaseModel, Generic[Payload]):
-    contribution_id: ContributionId
+    task_id: TaskId
     target: TargetId
     payload: Payload                # WikiEditPayload | GitHubCommentPayload
     evidence: list[Evidence]
@@ -179,7 +179,7 @@ class Proposal(BaseModel, Generic[Payload]):
 
 ```python
 class Submission(BaseModel):
-    contribution_id: ContributionId
+    task_id: TaskId
     external_ref: str | None        # revision id / comment id / changeset id
     request_digest: str             # exactly what we sent (audit)
     response_digest: str            # exactly what came back
@@ -190,10 +190,10 @@ class Submission(BaseModel):
 ### 5.3 The lifecycle object
 
 ```python
-class Contribution(BaseModel, Generic[Locator, Payload]):
-    id: ContributionId
+class Task(BaseModel, Generic[Locator, Payload]):
+    id: TaskId
     target: TargetId
-    state: ContributionState        # see §7
+    state: TaskState        # see §7
     opportunity: Opportunity[Locator]
     evidence: list[Evidence] = []
     proposal: Proposal[Payload] | None = None
@@ -204,9 +204,9 @@ class Contribution(BaseModel, Generic[Locator, Payload]):
 ```
 
 **Contract rules:**
-- `Contribution` is the *only* mutable persisted object. Everything else is immutable once produced (append, don't overwrite).
+- `Task` is the *only* mutable persisted object. Everything else is immutable once produced (append, don't overwrite).
 - Every mutation is a `Transition` appended to `history`, produced by exactly one runbook.
-- `version` enforces optimistic locking so two workers can't advance the same contribution.
+- `version` enforces optimistic locking so two workers can't advance the same task.
 
 ### 5.4 Runbook I/O envelope
 
@@ -228,12 +228,12 @@ The envelope is the single return contract for every runbook. The orchestrator o
 
 ## 6. Interfaces and protocols
 
-### 6.1 `ContributionTarget` — the plugin seam
+### 6.1 `TaskTarget` — the plugin seam
 
 This is *the* interface. Implement it and you have a new target. Note it is deliberately small — discovery/research/drafting live in agents and skills (§9–10), not here. A target knows only **how to locate work, how to render a proposal into its native format, how to validate, and how to submit.**
 
 ```python
-class ContributionTarget(Protocol[Locator, Payload]):
+class TaskTarget(Protocol[Locator, Payload]):
     id: TargetId
     display_name: str
 
@@ -255,7 +255,7 @@ class ContributionTarget(Protocol[Locator, Payload]):
         """Pure, deterministic checks. Empty list == valid. No network, no LLM."""
         ...
 
-    def preconditions(self, contribution: Contribution) -> list[Precondition]:
+    def preconditions(self, task: Task) -> list[Precondition]:
         """E.g. 'article still has the tag', 'issue still open'. Re-checked pre-submit."""
         ...
 
@@ -283,9 +283,9 @@ class ContributionTarget(Protocol[Locator, Payload]):
 
 ```python
 class StateStore(Protocol):
-    async def load(self, id: ContributionId) -> Contribution: ...
-    async def save(self, c: Contribution, expected_version: int) -> None: ...  # CAS
-    async def query(self, spec: QuerySpec) -> list[Contribution]: ...
+    async def load(self, id: TaskId) -> Task: ...
+    async def save(self, task: Task, expected_version: int) -> None: ...  # CAS
+    async def query(self, spec: QuerySpec) -> list[Task]: ...
 
 class GateProvider(Protocol):
     async def evaluate(self, req: GateRequest) -> GateDecision: ...  # auto or human
@@ -295,7 +295,7 @@ class Runbook(Protocol[I, O]):
     version: str
     input_model: type[I]
     output_model: type[O]
-    def preconditions(self, i: I, c: Contribution) -> list[Precondition]: ...
+    def preconditions(self, i: I, task: Task) -> list[Precondition]: ...
     async def run(self, i: I, ctx: RunContext) -> RunbookResult[O]: ...
 
 class Tool(Protocol):
@@ -310,7 +310,7 @@ Everything is a Protocol → structural typing → no base-class inheritance →
 
 ## 7. State machine
 
-A `Contribution` is a state machine. States are persisted; transitions are the *only* way state changes; each transition is owned by exactly one runbook.
+A `Task` is a state machine. States are persisted; transitions are the *only* way state changes; each transition is owned by exactly one runbook.
 
 ### 7.1 States
 
@@ -350,7 +350,7 @@ DISCOVERED ──► RESEARCHING ──► DRAFTED ──► GATE_PENDING
 - **Terminal states:** `REJECTED`, `FAILED`, `VERIFIED`, `REVERTED`, `ABANDONED`. (VERIFIED is "success terminal"; the rest are stop conditions.)
 - **`GATE_PENDING` is the durability crux.** A worker can die here and the system loses nothing — the gate decision arrives asynchronously and re-enters the machine.
 - **Preconditions are re-evaluated immediately before `SUBMITTING`.** The world changes while a proposal waits in review; a `[citation needed]` may already be fixed. If preconditions fail → `ABANDONED`, not an error.
-- **Idempotency:** `SUBMITTING` uses a deterministic idempotency key = `hash(contribution_id, proposal.payload)`. Re-running after a crash cannot double-submit.
+- **Idempotency:** `SUBMITTING` uses a deterministic idempotency key = `hash(task_id, proposal.payload)`. Re-running after a crash cannot double-submit.
 
 ---
 
@@ -363,7 +363,7 @@ A runbook is the atom of trust. It is a deterministic function with a rigid anat
 Every runbook declares, in this order:
 
 1. **Trigger** — what causes it to run (state entry, schedule, gate decision, manual).
-2. **Preconditions** — typed predicates over `(input, contribution)` that must hold. Fail → no side effects, clear error.
+2. **Preconditions** — typed predicates over `(input, task)` that must hold. Fail → no side effects, clear error.
 3. **Typed input** — a pydantic model. No positional args, no dicts.
 4. **Numbered steps** — each step is a tool call, a skill invocation, or a pure transform. Steps are individually logged and, where possible, individually idempotent.
 5. **Quality gate** — the exit condition. May be `auto` (thresholds) or `human` (emits `GateRequest`, returns `gate_pending`).
@@ -378,7 +378,7 @@ name: research_citation
 version: 1.2.0
 target: wikipedia
 trigger: on_state_enter(RESEARCHING)
-input: ResearchCitationInput      # { contribution_id }
+input: ResearchCitationInput      # { task_id }
 preconditions:
   - opportunity.kind == "citation_needed"
   - article_still_has_tag         # a Precondition predicate
@@ -401,28 +401,28 @@ errors:
 
 **Key properties:**
 - A runbook is *declarative about orchestration* (steps, gates, transitions) and *delegates reasoning to skills* and *side effects to tools*. The runbook itself contains no cleverness — it's a recipe.
-- Runbooks are **versioned** (`1.2.0`). A contribution records which runbook version produced each transition → full reproducibility and safe migration.
+- Runbooks are **versioned** (`1.2.0`). A task records which runbook version produced each transition → full reproducibility and safe migration.
 - The manifest is **inspectable**: a reviewer reads the YAML and knows exactly what will happen, in what order, under what gate. No hidden control flow.
 
 ### 8.3 The runbook loop (the durable executor)
 
 ```
 loop:
-  c = store.load_next_actionable()          # by state + schedule
-  rb = registry.runbook_for(c.state, c.target)
+  task = store.load_next_actionable()          # by state + schedule
+  rb = registry.runbook_for(task.state, task.target)
   if not rb: continue
-  if not all(rb.preconditions(input, c)):   # re-check world
-      transition(c, ABANDONED); continue
+  if not all(rb.preconditions(input, task)):   # re-check world
+      transition(task, ABANDONED); continue
   result = await rb.run(input, ctx)         # steps execute
   match result.status:
-      ok           -> transition(c, rb.on_success); store.save(c, c.version)
-      gate_pending -> transition(c, GATE_PENDING); enqueue(result.gate)
-      retryable    -> schedule_retry(c, backoff)
-      fatal        -> transition(c, FAILED, result.error)
+      ok           -> transition(task, rb.on_success); store.save(task, task.version)
+      gate_pending -> transition(task, GATE_PENDING); enqueue(result.gate)
+      retryable    -> schedule_retry(task, backoff)
+      fatal        -> transition(task, FAILED, result.error)
 ```
 
 - **Inspectable:** the loop is ~15 lines and does nothing an operator can't read.
-- **Restartable:** state is loaded from and saved to `StateStore` every iteration. Kill the process mid-loop; the next worker picks up the same contribution at its last committed state. `save` uses compare-and-swap on `version` so two workers never collide.
+- **Restartable:** state is loaded from and saved to `StateStore` every iteration. Kill the process mid-loop; the next worker picks up the same task at its last committed state. `save` uses compare-and-swap on `version` so two workers never collide.
 - **This is the Temporal influence** without adopting Temporal: durable state + idempotent steps + explicit retries. (We keep Temporal as an optional *executor backend* — see Open Questions §17.)
 
 ---
@@ -448,7 +448,7 @@ Agents live *above* the runbook loop. They are how natural-language intent and o
         └──── invoke skills + tools via mediated ToolContext ────┘
 ```
 
-- **Orchestrator** — the only agent that talks to the user. It maps intent to runbook invocations, sequences work, and reports status. It holds *no domain knowledge* — it doesn't know what a `<ref>` is. Its tools are `list_runbooks`, `invoke_runbook`, `query_contributions`, `explain_gate`.
+- **Orchestrator** — the only agent that talks to the user. It maps intent to runbook invocations, sequences work, and reports status. It holds *no domain knowledge* — it doesn't know what a `<ref>` is. Its tools are `list_runbooks`, `invoke_runbook`, `query_tasks`, `explain_gate`.
 - **Discovery agent** — given a target + budget, walks `discovery_sources`, emits `Opportunity[]`. Optimizes for recall + salience ranking.
 - **Researcher agent** — given an Opportunity, produces `Evidence[]`. Owns source-finding and verification skills. Optimizes for precision + calibrated confidence.
 - **Drafter agent** — given Opportunity + Evidence, produces a `ProposalDraft`. Owns tone/format skills per target's style guide.
@@ -467,10 +467,10 @@ Orchestrator plan:
   1. invoke_runbook(discover, {target: wikipedia,
                                scope: category("Marine biology"),
                                kind: citation_needed, limit: 20})
-  2. for top-5 by salience: invoke_runbook(research_citation, {contribution_id})
-  3. for each DRAFTED:      invoke_runbook(draft_edit, {contribution_id})
+  2. for top-5 by salience: invoke_runbook(research_citation, {task_id})
+  3. for each DRAFTED:      invoke_runbook(draft_edit, {task_id})
   4. gate_policy override:  force human review  (from "let me review each")
-  5. report: table of 5 GATE_PENDING contributions with review links
+  5. report: table of 5 GATE_PENDING tasks with review links
 ```
 
 The orchestrator translates the *soft* parts of intent (which category, how many, "let me review") into *hard* runbook parameters and gate overrides. It never invents a submission. The `force human review` came from natural language and is applied as a typed `GatePolicy` override — auditable, not vibes.
@@ -480,8 +480,8 @@ The orchestrator translates the *soft* parts of intent (which category, how many
 ```python
 Tool("list_runbooks",     args={target?: str}) -> [RunbookSpec]
 Tool("invoke_runbook",    args={name, version?, input: dict}) -> RunbookResult
-Tool("query_contributions", args={QuerySpec}) -> [ContributionSummary]
-Tool("explain_gate",      args={contribution_id}) -> GateExplanation
+Tool("query_tasks", args={QuerySpec}) -> [TaskSummary]
+Tool("explain_gate",      args={task_id}) -> GateExplanation
 Tool("set_gate_policy",   args={scope, policy})  -> Ack   # e.g. "review each"
 ```
 
@@ -524,7 +524,7 @@ list_category(category, target)       -> [ArticleRef]
 # Pure transforms (no I/O, no LLM)
 format_citation(source, style)        -> CitationString    # e.g. CS1/CS2 for WP
 render_diff(before, after)            -> UnifiedDiff
-build_idempotency_key(contribution)   -> str
+build_idempotency_key(task)   -> str
 
 # Write tools (side-effecting, gated, idempotent, rate-limited)
 submit_edit(payload, idempotency_key) -> Submission        # wikipedia
@@ -561,7 +561,7 @@ class GatePolicy(BaseModel):
 evaluate(proposal):
   issues = target.validate_payload(proposal.payload)
   if issues: return REJECT(issues)                 # hard, deterministic
-  if not all(target.preconditions(c)): return ABANDON
+  if not all(target.preconditions(task)): return ABANDON
   if policy.require_human_if(proposal): return HUMAN
   if policy.auto_pass_if(proposal):    return AUTO_PASS
   return policy.default
@@ -575,7 +575,7 @@ For **Phase 1 (Wikipedia), nothing auto-passes.** Every citation proposal gets h
 
 ### 12.4 Human review injection
 
-Human review is asynchronous and out-of-band. The gate emits a `GateRequest` (proposal + review brief from `summarize_for_review` + diff + evidence links). The contribution parks in `GATE_PENDING`. A reviewer acts via:
+Human review is asynchronous and out-of-band. The gate emits a `GateRequest` (proposal + review brief from `summarize_for_review` + diff + evidence links). The task parks in `GATE_PENDING`. A reviewer acts via:
 
 - **CLI / web review queue** — a rendered brief, one-key approve/reject/edit.
 - The decision returns as a `GateDecision {verdict, reviewer, notes, edited_payload?}` which re-enters the state machine.
@@ -590,9 +590,9 @@ Two distinct concerns: **is the pipeline healthy** (ops) and **is the agent outp
 
 ### 13.1 Tracing (ops)
 
-- Every runbook run, step, tool call, and skill invocation emits an **OpenTelemetry span**. `run_id` threads through `Provenance` so a contribution's entire life is one trace tree.
-- Metrics (Prometheus): contributions by state, transition rates, gate approve/reject/edit ratios, tool latency/error/cost, retry counts, `GATE_PENDING` queue depth and age vs. SLA.
-- The `Contribution.history` append-only log is the durable execution-state audit trail. Detailed prompts, source excerpts, model judgments, and tool results are retained in the tracing backend instead of duplicated in the contribution.
+- Every runbook run, step, tool call, and skill invocation emits an **OpenTelemetry span**. `run_id` threads through `Provenance` so a task's entire life is one trace tree.
+- Metrics (Prometheus): tasks by state, transition rates, gate approve/reject/edit ratios, tool latency/error/cost, retry counts, `GATE_PENDING` queue depth and age vs. SLA.
+- The `Task.history` append-only log is the durable execution-state audit trail. Detailed prompts, source excerpts, model judgments, and tool results are retained in the tracing backend instead of duplicated in the task.
 - Langfuse receives the OpenTelemetry traces and provides the LLM investigation surface. A deterministic trace ID correlates each run without persisting trace payloads in Keel.
 
 ### 13.2 Evaluation (quality)
@@ -616,7 +616,7 @@ A new target is a directory:
 ```
 plugins/osm/
 ├── manifest.yaml           # id, display_name, capabilities
-├── target.py               # OSMTarget(ContributionTarget)  — the protocol impl
+├── target.py               # OSMTarget(TaskTarget)  — the protocol impl
 ├── models.py               # OSMLocator, OSMPayload (pydantic)
 ├── tools.py                # osm-specific write tool(s): upload_changeset
 ├── skills/                 # OPTIONAL: target-specific skills (usually none)
@@ -628,7 +628,7 @@ plugins/osm/
 
 Steps to add a target:
 1. Define `Locator` + `Payload` pydantic models (the target-shaped data).
-2. Implement `ContributionTarget` — mostly `parse_opportunity`, `render_payload`, `validate_payload`, `submit`. ~150 lines.
+2. Implement `TaskTarget` — mostly `parse_opportunity`, `render_payload`, `validate_payload`, `submit`. ~150 lines.
 3. Bind the write tool(s) (`submit` mechanics + auth + rate limit).
 4. Write runbook manifests reusing existing skills. New reasoning? Add a skill — but prefer reusing `decompose_claim`, `assess_source_reliability`, etc.
 5. Register via entry point: `keel.targets = { osm = "plugins.osm.target:OSMTarget" }`.
@@ -657,8 +657,8 @@ Each target owns its external API integration, hidden behind `submit`/`fetch` to
 ### 15.3 Operator API (control plane)
 
 A small HTTP/CLI surface for humans:
-- `GET /contributions?state=GATE_PENDING` — the review queue.
-- `POST /contributions/{id}/decision` — submit a gate decision.
+- `GET /tasks?state=GATE_PENDING` — the review queue.
+- `POST /tasks/{id}/decision` — submit a gate decision.
 - `POST /runbooks/{name}/invoke` — manual trigger.
 - `GET /health`, `GET /metrics` — ops.
 
@@ -671,7 +671,7 @@ A small HTTP/CLI surface for humans:
 - Full state machine, durable executor, **human review on every proposal (zero auto-pass)**.
 - Runbooks: `discover`, `research_citation`, `draft_edit`, `submit_edit`, `verify_submission`.
 - Skills: `decompose_claim`, `assess_source_reliability`, `verify_claim_support`, `summarize_for_review`.
-- Success criteria: 50 human-approved edits submitted; community revert rate < 5%; every contribution fully reconstructable from `history`; a worker kill mid-run loses nothing.
+- Success criteria: 50 human-approved edits submitted; community revert rate < 5%; every task fully reconstructable from `history`; a worker kill mid-run loses nothing.
 - **Explicitly out of scope:** auto-pass, second target, web UI beyond a review CLI.
 
 ### Phase 2 — Prove generalization (second target)
@@ -682,7 +682,7 @@ A small HTTP/CLI surface for humans:
 ### Phase 3 — Community-ready open source
 - Stable public Protocols with semver; plugin cookiecutter template + a "write your first target in an afternoon" tutorial.
 - Web review queue; multi-reviewer routing; the eval harness as a public, runnable suite.
-- Governance docs: ethics policy, bot-approval guidance per commons, contribution etiquette, and a clear "this is a tool operated by a human, not an autonomous bot" stance.
+- Governance docs: ethics policy, bot-approval guidance per commons, task etiquette, and a clear "this is a tool operated by a human, not an autonomous bot" stance.
 - Reference plugins for 2–3 targets as living examples.
 
 ---
@@ -692,8 +692,8 @@ A small HTTP/CLI surface for humans:
 1. **Executor: build or adopt?** Our §8.3 loop is ~15 lines but reimplements a slice of Temporal. Do we ship the lightweight loop and offer Temporal/Restate as an optional backend, or adopt Temporal from day one? *Recommendation: ship the lightweight loop for Phase 1 (fewer deps, easier to open-source and run locally); design the executor behind an interface so Temporal is a Phase-2 backend swap.*
 2. **Ethics & bot policy per commons.** Wikipedia has a formal bot approval process (BRFA); OSM and OFF have their own norms. What is our stance — do we require operators to obtain approval, and how do we encode "this account is human-supervised"? This is a *governance* decision, not a technical one, and it gates public release.
 3. **Confidence calibration.** "confidence >= 0.75" is meaningless until calibrated. How do we establish that an agent's stated 0.75 corresponds to a real 75% correctness rate? Needs a calibration dataset before any auto-pass exists.
-4. **Attribution & licensing of drafted content.** When the agent drafts prose backed by sources, whose contribution is it, and does it satisfy each commons' license (CC-BY-SA for WP)? Legal review needed.
-5. **Discovery cost control.** Fan-out discovery + research can burn tokens fast. Do we budget per-contribution, per-run, or per-target-per-day? *Recommendation: hard per-run token budget passed in `RunContext`, enforced by the tool runtime.*
+4. **Attribution & licensing of drafted content.** When the agent drafts prose backed by sources, whose task is it, and does it satisfy each commons' license (CC-BY-SA for WP)? Legal review needed.
+5. **Discovery cost control.** Fan-out discovery + research can burn tokens fast. Do we budget per-task, per-run, or per-target-per-day? *Recommendation: hard per-run token budget passed in `RunContext`, enforced by the tool runtime.*
 6. **Multi-tenancy.** One operator, or a hosted service many operators use with their own credentials? Affects auth, secrets, and rate-limit accounting significantly. *Recommendation: single-operator for Phases 1–2; defer.*
 7. **Human review UX & sourcing of reviewers.** For Wikipedia, should reviewers be experienced editors? A CLI is fine for Phase 1, but who reviews at volume, and how do we avoid rubber-stamping?
 
@@ -705,18 +705,18 @@ A small HTTP/CLI surface for humans:
 
 1. **§9 Agent layer — the NL→plan mapping is hand-waved.** I show one clean example, but I don't specify how the orchestrator *reliably* produces valid plans, what happens on ambiguous intent, or how plan validation works before execution. In practice this is the hardest, least deterministic part of the system, and it's the least specified. A real design needs a typed `Plan` object, plan validation against the runbook registry, and a confirmation step before any runbook with side effects runs.
 2. **§13.2 Evaluation — the calibration story is asserted, not designed.** I claim we "widen auto-pass when human-gate agreement is high," but I don't define how the golden sets are built, how large they must be for statistical confidence, or how we prevent eval overfitting. Confidence calibration (Open Q #3) is arguably the single most important unsolved thing here and it's given a paragraph.
-3. **§6.1 `ContributionTarget` — discovery may be too thin.** I pushed discovery reasoning into agents and left the target with just `discovery_sources` + `parse_opportunity`. For targets where discovery is deeply domain-specific (e.g. OSM spatial queries, SEC XBRL parsing), that split may leak — the agent would need target knowledge it shouldn't have. The seam between "generic discovery agent" and "target-specific discovery" is under-tested with only Wikipedia in hand.
+3. **§6.1 `TaskTarget` — discovery may be too thin.** I pushed discovery reasoning into agents and left the target with just `discovery_sources` + `parse_opportunity`. For targets where discovery is deeply domain-specific (e.g. OSM spatial queries, SEC XBRL parsing), that split may leak — the agent would need target knowledge it shouldn't have. The seam between "generic discovery agent" and "target-specific discovery" is under-tested with only Wikipedia in hand.
 
 ### Architectural tensions / inconsistencies
 
 - **"Agents only invoke runbooks" vs. discovery being agentic.** Discovery is described as an agent walking sources, but discovery is *also* a runbook. Which owns the loop? The honest answer: the discovery *runbook* is the durable shell, and it *invokes the discovery agent as a step*. I use "agent" and "runbook" loosely in §9; the crisp rule is **runbooks are durable shells; agents are steps inside them.** This should be stated once, early, and held to.
-- **Generic-over-`Payload` typing vs. a dynamic plugin registry.** `Contribution[Locator, Payload]` is statically generic, but the registry loads targets dynamically at runtime. In practice the core handles `Contribution[Any, Any]` and only the target sees concrete types — the static generics are mostly documentation. That's fine, but I present them as if the core enforces them, which it can't across a dynamic boundary.
+- **Generic-over-`Payload` typing vs. a dynamic plugin registry.** `Task[Locator, Payload]` is statically generic, but the registry loads targets dynamically at runtime. In practice the core handles `Task[Any, Any]` and only the target sees concrete types — the static generics are mostly documentation. That's fine, but I present them as if the core enforces them, which it can't across a dynamic boundary.
 - **Auto-pass ambition vs. Phase-1 "nothing auto-passes."** The whole eval/ratchet apparatus (§13) exists to enable auto-pass, but Phase 1 forbids it. There's a risk of building the ratchet before we've earned the right to use it — some of §12–13 is speculative until Phase 2 gives us a second, lower-risk target to actually try auto-pass on.
 
 ### What a senior OSS maintainer would expect that's missing
 
 - **A concrete plugin template / cookiecutter and a "hello world" target.** I describe the plugin layout but a maintainer wants the scaffolding command and a trivial reference target to copy.
-- **Versioning & compatibility policy for the Protocols.** If plugins depend on `ContributionTarget`, changing it breaks the ecosystem. Semver + a deprecation policy + a protocol-version capability field are needed and only gestured at.
+- **Versioning & compatibility policy for the Protocols.** If plugins depend on `TaskTarget`, changing it breaks the ecosystem. Semver + a deprecation policy + a protocol-version capability field are needed and only gestured at.
 - **Security model for secrets and prompt injection.** Agents fetch untrusted web content and feed it to LLMs — the classic injection surface. I mention secrets never touch agent context but don't design the untrusted-content boundary (e.g. content fetched by tools must be treated as data, never as instructions; write tools must be unreachable from agent context — which I assert but don't prove).
 - **CONTRIBUTING, testing story, and local dev loop.** How does a contributor run the pipeline against a Wikipedia *sandbox* (not production) locally? A test-target that submits nowhere is essential and unmentioned.
 - **A LICENSE and dependency-license audit** (matters doubly for a tool that touches CC-BY-SA content).

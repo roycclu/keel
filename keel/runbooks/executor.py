@@ -2,7 +2,7 @@
 
 Restartable: state is loaded and saved every iteration through the StateStore, and the
 save is a compare-and-swap on `version`. Kill the process mid-run; the next invocation
-picks up the same contribution at its last committed checkpoint. A retryable failure
+picks up the same task at its last committed checkpoint. A retryable failure
 re-saves (bumping updated_at) so the item rotates to the back of the queue instead of
 spinning in place.
 """
@@ -12,12 +12,12 @@ from __future__ import annotations
 from typing import Callable
 
 from keel.core.runtime import RunContext
-from keel.core.states import ContributionState, transition
-from keel.core.types import Contribution
+from keel.core.states import TaskState, transition
+from keel.core.types import Task
 from keel.core.protocols import StateStore, VersionConflict
 from keel.runbooks.base import ACTIONABLE, Workflow
 
-MakeContext = Callable[[Contribution], RunContext]
+MakeContext = Callable[[Task], RunContext]
 
 
 class Executor:
@@ -27,22 +27,22 @@ class Executor:
         self._make_ctx = make_ctx
 
     async def run_once(self, target: str) -> bool:
-        """Advance one contribution by one checkpoint. Returns False when idle."""
-        c = await self._store.load_next_actionable(target, ACTIONABLE)
-        if c is None:
+        """Advance one task by one checkpoint. Returns False when idle."""
+        task = await self._store.load_next_actionable(target, ACTIONABLE)
+        if task is None:
             return False
-        expected = c.version
-        ctx = self._make_ctx(c)
+        expected = task.version
+        ctx = self._make_ctx(task)
         rb = f"{self._workflow.name}@{self._workflow.version}"
         try:
-            await self._workflow.advance(c, ctx)
-        except Exception as exc:  # unexpected: fail loudly, do not lose the contribution
-            ctx.observer.event("advance.crash", id=c.id, error=repr(exc))
-            if c.state not in (ContributionState.FAILED,):
+            await self._workflow.advance(task, ctx)
+        except Exception as exc:  # unexpected: fail loudly, do not lose the task
+            ctx.observer.event("advance.crash", id=task.id, error=repr(exc))
+            if task.state not in (TaskState.FAILED,):
                 try:
                     transition(
-                        c,
-                        ContributionState.FAILED,
+                        task,
+                        TaskState.FAILED,
                         runbook=rb,
                         run_id=ctx.run_id,
                         reason=f"unhandled: {exc!r}",
@@ -50,10 +50,10 @@ class Executor:
                 except Exception:
                     pass
         try:
-            await self._store.save(c, expected)
+            await self._store.save(task, expected)
         except VersionConflict:
             # another worker advanced it first; drop this attempt, it will be re-picked
-            ctx.observer.event("advance.conflict", id=c.id)
+            ctx.observer.event("advance.conflict", id=task.id)
         ctx.observer.flush()
         return True
 

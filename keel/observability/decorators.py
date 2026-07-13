@@ -47,7 +47,7 @@ def observed_workflow(func: AsyncMethod) -> AsyncMethod:
             observation_type="agent",
             version=str(getattr(self, "version")),
             input={
-                "contribution_id": getattr(inp, "id", None),
+                "task_id": getattr(inp, "id", None),
                 "state": str(getattr(inp, "state", "")),
                 "version": getattr(inp, "version", None),
                 "summary": getattr(opportunity, "summary", None),

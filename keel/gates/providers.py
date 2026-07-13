@@ -22,14 +22,14 @@ class AutoGateProvider:
 
     async def evaluate(self, req: GateRequest) -> GateDecision:
         return GateDecision(
-            contribution_id=req.contribution_id,
+            task_id=req.task_id,
             verdict=GateVerdict.APPROVE,
             reviewer=f"auto:policy@{self.version}",
             notes="auto-passed by policy",
             decided=Provenance(
                 produced_by=f"auto:policy@{self.version}",
                 at=datetime.now(timezone.utc),
-                run_id=req.contribution_id,
+                run_id=req.task_id,
                 inputs_hash="",
             ),
         )

@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, runtime_checkable
 from pydantic import BaseModel, Field
 
 from keel.core.errors import KeelError, ValidationIssue
-from keel.core.states import ContributionState
+from keel.core.states import TaskState
 from keel.core.types import (
-    Contribution,
+    Task,
     GateDecision,
     GateRequest,
     Opportunity,
@@ -82,14 +82,14 @@ class RawItem(BaseModel):
 
 class QuerySpec(BaseModel):
     target: TargetId | None = None
-    states: list[ContributionState] | None = None
+    states: list[TaskState] | None = None
     limit: int = Field(default=50, ge=1)
 
 
 class VersionConflict(Exception):
     """Raised by StateStore.save when the compare-and-swap on `version` fails.
 
-    Signals that another worker advanced this contribution first. The caller reloads
+    Signals that another worker advanced this task first. The caller reloads
     and retries; it is a concurrency condition, not a data error.
     """
 
@@ -129,7 +129,7 @@ class Runbook(Protocol[RunbookInput, RunbookOutput]):
     input_model: type[RunbookInput]
     output_model: type[RunbookOutput]
 
-    def preconditions(self, i: RunbookInput, c: Contribution) -> list[PreconditionResult]: ...
+    def preconditions(self, i: RunbookInput, task: Task) -> list[PreconditionResult]: ...
 
     async def run(self, i: RunbookInput, ctx: RunContext) -> RunbookResult[RunbookOutput]: ...
 
@@ -139,24 +139,24 @@ class Runbook(Protocol[RunbookInput, RunbookOutput]):
 
 @runtime_checkable
 class StateStore(Protocol):
-    async def create(self, c: Contribution) -> None: ...
+    async def create(self, task: Task) -> None: ...
 
-    async def load(self, contribution_id: str) -> Contribution: ...
+    async def load(self, task_id: str) -> Task: ...
 
-    async def save(self, c: Contribution, expected_version: int) -> None:
+    async def save(self, task: Task, expected_version: int) -> None:
         """Compare-and-swap on `version`. Raises VersionConflict on mismatch."""
         ...
 
-    async def query(self, spec: QuerySpec) -> list[Contribution]: ...
+    async def query(self, spec: QuerySpec) -> list[Task]: ...
 
     async def load_next_actionable(
-        self, target: TargetId, states: list[ContributionState]
-    ) -> Contribution | None:
-        """Pop the oldest contribution in an actionable state, or None if idle."""
+        self, target: TargetId, states: list[TaskState]
+    ) -> Task | None:
+        """Pop the oldest task in an actionable state, or None if idle."""
         ...
 
     async def start_step(
-        self, contribution_id: str, run_id: str, spec: WorkflowStepSpec
+        self, task_id: str, run_id: str, spec: WorkflowStepSpec
     ) -> WorkflowStepExecution: ...
 
     async def finish_step(
@@ -166,7 +166,7 @@ class StateStore(Protocol):
         detail: str | None = None,
     ) -> WorkflowStepExecution: ...
 
-    async def list_steps(self, contribution_id: str) -> list[WorkflowStepExecution]: ...
+    async def list_steps(self, task_id: str) -> list[WorkflowStepExecution]: ...
 
 
 # --- gate + auth providers -------------------------------------------------------
@@ -194,7 +194,7 @@ class AuthProvider(Protocol):
 
 
 @runtime_checkable
-class ContributionTarget(Protocol[Locator, Draft, Payload]):
+class TaskTarget(Protocol[Locator, Draft, Payload]):
     """Implement this and you have a new target. Phase 1 ships exactly one impl
     (WikipediaTarget). Every method is either pure (validate/render) or a single
     well-defined side effect (submit/reverse). There is deliberately no "do it all"
@@ -215,7 +215,7 @@ class ContributionTarget(Protocol[Locator, Draft, Payload]):
 
     # live precondition re-check (may do read-only I/O)
     async def preconditions(
-        self, c: Contribution, ctx: ToolContext
+        self, task: Task, ctx: ToolContext
     ) -> list[PreconditionResult]: ...
 
     # the only irreversible operation

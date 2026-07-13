@@ -80,13 +80,13 @@ class FailingDecoratedTool:
 
 def test_langfuse_observer_correlates_nested_observations() -> None:
     client = FakeLangfuse()
-    observer = LangfuseObserver("contribution:abc:v1", client)  # type: ignore[arg-type]
+    observer = LangfuseObserver("task:abc:v1", client)  # type: ignore[arg-type]
 
     with observer.span("workflow.advance", observation_type="agent", input={"id": "abc"}):
         observer.event("workflow.step.started", step_id="research")
         observer.update(output={"state": "researching"})
 
-    assert observer.trace_id == langfuse_trace_id("contribution:abc:v1")
+    assert observer.trace_id == langfuse_trace_id("task:abc:v1")
     assert client.starts[0]["trace_context"] == {"trace_id": observer.trace_id}
     assert "trace_context" not in client.starts[1]
     assert client.span_updates == [{"output": {"state": "researching"}}]

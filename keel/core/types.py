@@ -18,7 +18,7 @@ from typing import Generic, Literal, TypeVar
 from pydantic import BaseModel, Field, HttpUrl
 
 from keel.core.errors import KeelError
-from keel.core.states import ContributionState, Transition
+from keel.core.states import TaskState, Transition
 
 # Target-shaped type parameters. The core never inspects these; the target does.
 Locator = TypeVar("Locator", bound=BaseModel)  # how to find the opportunity again
@@ -27,7 +27,7 @@ Payload = TypeVar("Payload", bound=BaseModel)  # the target's native change body
 # --- identifiers -----------------------------------------------------------------
 
 TargetId = str  # "wikipedia". A plain string alias; there is one target in Phase 1.
-ContributionId = str  # ULID, sortable by creation time.
+TaskId = str  # ULID, sortable by creation time.
 
 
 # --- provenance ------------------------------------------------------------------
@@ -84,7 +84,7 @@ class WorkflowStepExecution(BaseModel):
     """A durable attempt at one workflow step, independent of lifecycle state."""
 
     id: str
-    contribution_id: ContributionId
+    task_id: TaskId
     run_id: str
     step_id: str
     label: str
@@ -160,7 +160,7 @@ class Proposal(BaseModel, Generic[Payload]):
     it; they validate and send it verbatim.
     """
 
-    contribution_id: ContributionId
+    task_id: TaskId
     target: TargetId
     payload: Payload
     evidence: list[Evidence]
@@ -173,7 +173,7 @@ class Proposal(BaseModel, Generic[Payload]):
 class Submission(BaseModel):
     """The record of what was actually sent and what came back."""
 
-    contribution_id: ContributionId
+    task_id: TaskId
     external_ref: str | None = None  # revision id
     request_digest: str  # exactly what we sent (audit)
     response_digest: str  # exactly what came back (audit)
@@ -191,13 +191,13 @@ class GateVerdict(StrEnum):
 
 
 class GateRequest(BaseModel):
-    """Emitted when a runbook parks a contribution in GATE_PENDING.
+    """Emitted when a runbook parks a task in GATE_PENDING.
 
     Everything a human needs to decide without leaving the review surface: the brief,
     the rendered diff, and the evidence. Populated by the `summarize_for_review` skill.
     """
 
-    contribution_id: ContributionId
+    task_id: TaskId
     brief: str  # summarize_for_review output
     diff: str  # rendered unified wikitext diff
     evidence_digest: str  # compact source list with reliability
@@ -208,7 +208,7 @@ class GateRequest(BaseModel):
 class GateDecision(BaseModel):
     """A human (or, later, an auto-gate) decision re-entering the state machine."""
 
-    contribution_id: ContributionId
+    task_id: TaskId
     verdict: GateVerdict
     reviewer: str  # "human:alice" | "auto:policy@1"
     notes: str | None = None
@@ -219,19 +219,19 @@ class GateDecision(BaseModel):
 # --- the lifecycle object --------------------------------------------------------
 
 
-class Contribution(BaseModel, Generic[Locator, Payload]):
+class Task(BaseModel, Generic[Locator, Payload]):
     """The one mutable, persisted object. Everything hangs off it.
 
     Contract rules (ARCHITECTURE.md #5):
       - The only mutable persisted object; all sub-objects are append-only.
       - Every state change appends a Transition to `history`.
       - `version` enforces optimistic locking (compare-and-swap in the StateStore),
-        so two workers can never advance the same contribution concurrently.
+        so two workers can never advance the same task concurrently.
     """
 
-    id: ContributionId
+    id: TaskId
     target: TargetId
-    state: ContributionState = ContributionState.DISCOVERED
+    state: TaskState = TaskState.DISCOVERED
     opportunity: Opportunity[Locator]
     evidence: list[Evidence] = Field(default_factory=list)
     proposal: Proposal[Payload] | None = None

@@ -1,7 +1,7 @@
 """Observer: the single sink for structured events and timed spans.
 
 Every runbook, step, tool call, and skill invocation emits through here so a
-contribution's whole life is one correlated stream keyed by `run_id`. Phase 1 ships
+task's whole life is one correlated stream keyed by `run_id`. Phase 1 ships
 JSONL, null, and OpenTelemetry-native Langfuse sinks behind the same Protocol
 (AGENTS.md #1: extend this, do not fork it).
 """

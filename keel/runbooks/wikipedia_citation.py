@@ -21,10 +21,10 @@ from urllib.parse import urlsplit
 from keel.core.errors import TargetOperationError
 from keel.core.protocols import RawItem
 from keel.core.runtime import RunContext
-from keel.core.states import ContributionState as S
+from keel.core.states import TaskState as S
 from keel.core.states import transition
 from keel.core.types import (
-    Contribution,
+    Task,
     Evidence,
     GateRequest,
     Impact,
@@ -131,12 +131,12 @@ class WikipediaCitationWorkflow:
             inputs_hash=hashlib.sha256(str(inputs).encode()).hexdigest()[:16],
         )
 
-    # --- discovery: create DISCOVERED contributions ----------------------------
+    # --- discovery: create DISCOVERED tasks ----------------------------
 
     async def discover(
         self, ctx: RunContext, *, limit_pages: int = 5, tags_per_page: int = 1
-    ) -> list[Contribution]:
-        """Find citation-needed tags and turn each into a fresh Contribution.
+    ) -> list[Task]:
+        """Find citation-needed tags and turn each into a fresh Task.
 
         Deterministic tag-finding; no LLM. The executor drives these forward later."""
         tctx, rid = ctx.tool_ctx(), ctx.run_id
@@ -146,7 +146,7 @@ class WikipediaCitationWorkflow:
         if not found.ok or found.value is None:
             return []
         source = self._target.discovery_sources()[0]
-        out: list[Contribution] = []
+        out: list[Task] = []
         for rank, page in enumerate(found.value.pages):
             fetch = await FetchArticleTool().call(FetchArticleRequest(title=page.title), tctx)
             if not fetch.ok or fetch.value is None:
@@ -170,7 +170,7 @@ class WikipediaCitationWorkflow:
                 if opp is None:
                     continue
                 out.append(
-                    Contribution[WikiLocator, WikiEditPayload](
+                    Task[WikiLocator, WikiEditPayload](
                         id=uuid.uuid4().hex,
                         target=self._target.id,
                         state=S.DISCOVERED,
@@ -180,22 +180,22 @@ class WikipediaCitationWorkflow:
         return out
 
     @observed_workflow
-    async def advance(self, c: Contribution, ctx: RunContext) -> Advance:
-        if c.state == S.DISCOVERED:
-            return await self._research_and_draft(c, ctx)
-        if c.state == S.APPROVED:
-            return await self._submit(c, ctx)
-        if c.state == S.SUBMITTED:
-            return await self._verify(c, ctx)
-        raise RuntimeError(f"workflow has no branch for state {c.state}")
+    async def advance(self, task: Task, ctx: RunContext) -> Advance:
+        if task.state == S.DISCOVERED:
+            return await self._research_and_draft(task, ctx)
+        if task.state == S.APPROVED:
+            return await self._submit(task, ctx)
+        if task.state == S.SUBMITTED:
+            return await self._verify(task, ctx)
+        raise RuntimeError(f"workflow has no branch for state {task.state}")
 
     # --- DISCOVERED: research + draft + gate ------------------------------------
 
-    async def _research_and_draft(self, c: Contribution, ctx: RunContext) -> Advance:
+    async def _research_and_draft(self, task: Task, ctx: RunContext) -> Advance:
         tctx, sctx, rid = ctx.tool_ctx(), ctx.skill_ctx(), ctx.run_id
-        loc = c.opportunity.locator
+        loc = task.opportunity.locator
 
-        async with track_step(c, ctx, STEP_FETCH) as step:
+        async with track_step(task, ctx, STEP_FETCH) as step:
             fetch = await FetchArticleTool().call(FetchArticleRequest(title=loc.title), tctx)
             if not fetch.ok or fetch.value is None:
                 err = fetch.error
@@ -208,7 +208,7 @@ class WikipediaCitationWorkflow:
                 if err and err.is_retryable():
                     return Advance(status="retryable_error", error=err)
                 transition(
-                    c,
+                    task,
                     S.ABANDONED,
                     runbook=self._rb,
                     run_id=rid,
@@ -229,7 +229,7 @@ class WikipediaCitationWorkflow:
             if hit is None:
                 await step.finish(WorkflowStepState.SKIPPED, "citation-needed tag is gone")
                 transition(
-                    c,
+                    task,
                     S.ABANDONED,
                     runbook=self._rb,
                     run_id=rid,
@@ -239,8 +239,8 @@ class WikipediaCitationWorkflow:
                 return Advance(status="ok", reason="tag gone")
             await step.finish(WorkflowStepState.COMPLETED, f"revision {snapshot.revid}")
 
-        transition(c, S.RESEARCHING, runbook=self._rb, run_id=rid, step="research")
-        async with track_step(c, ctx, STEP_LOCATE) as step:
+        transition(task, S.RESEARCHING, runbook=self._rb, run_id=rid, step="research")
+        async with track_step(task, ctx, STEP_LOCATE) as step:
             claim = await LocateUncitedClaim().run(
                 LocateInput(window=hit.window, section=hit.section), sctx
             )
@@ -248,7 +248,7 @@ class WikipediaCitationWorkflow:
 
         verified: list[Evidence] = []
         for hint in claim.search_hints[:MAX_HINTS]:
-            async with track_step(c, ctx, STEP_SEARCH) as step:
+            async with track_step(task, ctx, STEP_SEARCH) as step:
                 search = await WebSearchTool().call(WebSearchRequest(query=hint, k=SEARCH_K), tctx)
                 if not search.ok or search.value is None:
                     code = search.error.code if search.error else "search failed"
@@ -265,7 +265,7 @@ class WikipediaCitationWorkflow:
                     output=search.value.model_dump(mode="json"),
                 )
             for h in search.value.hits:
-                async with track_step(c, ctx, STEP_VERIFY_SOURCE) as step:
+                async with track_step(task, ctx, STEP_VERIFY_SOURCE) as step:
                     support = await VerifyClaimSupport().run(
                         VerifyInput(claim=claim.claim_text, source_excerpt=h.snippet), sctx
                     )
@@ -276,7 +276,7 @@ class WikipediaCitationWorkflow:
                     )
                 if not support.supports or support.confidence < MIN_CONFIDENCE:
                     continue
-                async with track_step(c, ctx, STEP_ASSESS_SOURCE) as step:
+                async with track_step(task, ctx, STEP_ASSESS_SOURCE) as step:
                     judged = await AssessSourceReliability().run(
                         AssessInput(
                             url=str(h.url),
@@ -314,7 +314,7 @@ class WikipediaCitationWorkflow:
         strong = [e for e in verified if e.sources[0].reliability == Reliability.HIGH]
         if not strong:
             transition(
-                c,
+                task,
                 S.ABANDONED,
                 runbook=self._rb,
                 run_id=rid,
@@ -323,11 +323,11 @@ class WikipediaCitationWorkflow:
             )
             return Advance(status="ok", reason="insufficient sourcing")
 
-        c.evidence = verified
+        task.evidence = verified
         chosen = (strong + [e for e in verified if e not in strong])[:MAX_SOURCES]
 
         # --- draft ---
-        transition(c, S.DRAFTED, runbook=self._rb, run_id=rid, step="draft")
+        transition(task, S.DRAFTED, runbook=self._rb, run_id=rid, step="draft")
         draft_sources = [
             DraftSource(
                 index=i,
@@ -338,7 +338,7 @@ class WikipediaCitationWorkflow:
             )
             for i, e in enumerate(chosen)
         ]
-        async with track_step(c, ctx, STEP_DRAFT) as step:
+        async with track_step(task, ctx, STEP_DRAFT) as step:
             cd: CitationDraft = await DraftCitation().run(
                 DraftInput(claim=claim.claim_text, context=claim.context, sources=draft_sources),
                 sctx,
@@ -364,13 +364,13 @@ class WikipediaCitationWorkflow:
             rationale=cd.rationale,
             confidence=cd.confidence,
         )
-        async with track_step(c, ctx, STEP_RENDER) as step:
+        async with track_step(task, ctx, STEP_RENDER) as step:
             try:
                 payload = self._target.render_payload(draft)
             except ValueError as exc:
                 await step.finish(WorkflowStepState.SKIPPED, str(exc))
                 transition(
-                    c,
+                    task,
                     S.ABANDONED,
                     runbook=self._rb,
                     run_id=rid,
@@ -383,12 +383,12 @@ class WikipediaCitationWorkflow:
             if issues:
                 detail = "; ".join(f"{i.field}:{i.code}" for i in issues)
                 await step.finish(WorkflowStepState.FAILED, detail)
-                transition(c, S.FAILED, runbook=self._rb, run_id=rid, step="draft", reason=detail)
+                transition(task, S.FAILED, runbook=self._rb, run_id=rid, step="draft", reason=detail)
                 return Advance(status="fatal_error", reason="payload failed validation")
             await step.finish(WorkflowStepState.COMPLETED, "payload valid")
 
-        c.proposal = Proposal(
-            contribution_id=c.id,
+        task.proposal = Proposal(
+            task_id=task.id,
             target=self._target.id,
             payload=payload,
             evidence=picked,
@@ -404,7 +404,7 @@ class WikipediaCitationWorkflow:
             f"- ({e.sources[0].reliability}) {e.sources[0].title} {e.sources[0].url}"
             for e in picked
         )
-        async with track_step(c, ctx, STEP_REVIEW) as step:
+        async with track_step(task, ctx, STEP_REVIEW) as step:
             brief = await SummarizeForReview().run(
                 ReviewInput(
                     article_title=snapshot.title,
@@ -422,7 +422,7 @@ class WikipediaCitationWorkflow:
         flags = f"\n\nRisk flags: {', '.join(brief.risk_flags)}" if brief.risk_flags else ""
         policy = self._target.gate_policy()
         gate_req = GateRequest(
-            contribution_id=c.id,
+            task_id=task.id,
             brief=brief.brief + flags,
             diff=diff,
             evidence_digest=sources_digest,
@@ -430,34 +430,34 @@ class WikipediaCitationWorkflow:
             sla_deadline=_now() + policy.sla if policy.sla else None,
         )
 
-        transition(c, S.GATE_PENDING, runbook=self._rb, run_id=rid, step="gate")
-        if policy.route(c.proposal) == "human":
-            c.pending_gate = gate_req
-            async with track_step(c, ctx, STEP_GATE) as step:
+        transition(task, S.GATE_PENDING, runbook=self._rb, run_id=rid, step="gate")
+        if policy.route(task.proposal) == "human":
+            task.pending_gate = gate_req
+            async with track_step(task, ctx, STEP_GATE) as step:
                 await step.finish(WorkflowStepState.WAITING, "awaiting human review")
             return Advance(status="gate_pending", reason="awaiting human review")
 
         # auto-pass path (unreachable in Phase 1; every policy routes to human)
         decision = await ctx.gate.evaluate(gate_req)
-        c.gate_decisions.append(decision)
-        async with track_step(c, ctx, STEP_GATE) as step:
+        task.gate_decisions.append(decision)
+        async with track_step(task, ctx, STEP_GATE) as step:
             await step.finish(WorkflowStepState.COMPLETED, f"approved by {decision.reviewer}")
-        transition(c, S.APPROVED, runbook=self._rb, run_id=rid, step="gate")
+        transition(task, S.APPROVED, runbook=self._rb, run_id=rid, step="gate")
         return Advance(status="ok", reason="auto-passed")
 
     # --- APPROVED: submit -------------------------------------------------------
 
-    async def _submit(self, c: Contribution, ctx: RunContext) -> Advance:
+    async def _submit(self, task: Task, ctx: RunContext) -> Advance:
         tctx, rid = ctx.tool_ctx(), ctx.run_id
-        assert c.proposal is not None
+        assert task.proposal is not None
 
-        async with track_step(c, ctx, STEP_PRECONDITIONS) as step:
-            pres = await self._target.preconditions(c, tctx)
+        async with track_step(task, ctx, STEP_PRECONDITIONS) as step:
+            pres = await self._target.preconditions(task, tctx)
             if not all(p.holds for p in pres):
                 detail = "; ".join(f"{p.name}={p.detail}" for p in pres if not p.holds)
                 await step.finish(WorkflowStepState.FAILED, detail)
                 transition(
-                    c,
+                    task,
                     S.ABANDONED,
                     runbook=self._rb,
                     run_id=rid,
@@ -467,22 +467,22 @@ class WikipediaCitationWorkflow:
                 return Advance(status="ok", reason="precondition failed")
             await step.finish(WorkflowStepState.COMPLETED, "all conditions hold")
 
-        payload = c.proposal.payload
-        last = c.gate_decisions[-1] if c.gate_decisions else None
+        payload = task.proposal.payload
+        last = task.gate_decisions[-1] if task.gate_decisions else None
         if last and last.edited_payload:
             payload = type(payload).model_validate(last.edited_payload)
 
-        async with track_step(c, ctx, STEP_SUBMIT) as step:
+        async with track_step(task, ctx, STEP_SUBMIT) as step:
             try:
                 submission = await self._target.submit(payload, tctx)
             except TargetOperationError as exc:
                 if exc.error.is_retryable():
                     await step.finish(WorkflowStepState.RETRYING, exc.error.code)
-                    ctx.observer.event("submit.retryable", id=c.id, error=exc.error.code)
+                    ctx.observer.event("submit.retryable", id=task.id, error=exc.error.code)
                     return Advance(status="retryable_error", error=exc.error)
                 await step.finish(WorkflowStepState.FAILED, exc.error.code)
                 transition(
-                    c, S.FAILED, runbook=self._rb, run_id=rid, step="submit", reason=exc.error.code
+                    task, S.FAILED, runbook=self._rb, run_id=rid, step="submit", reason=exc.error.code
                 )
                 return Advance(status="fatal_error", error=exc.error)
             await step.finish(
@@ -490,11 +490,11 @@ class WikipediaCitationWorkflow:
                 f"external_ref={submission.external_ref}",
             )
 
-        submission.contribution_id = c.id
-        c.submission = submission
-        transition(c, S.SUBMITTING, runbook=self._rb, run_id=rid, step="submit")
+        submission.task_id = task.id
+        task.submission = submission
+        transition(task, S.SUBMITTING, runbook=self._rb, run_id=rid, step="submit")
         transition(
-            c,
+            task,
             S.SUBMITTED,
             runbook=self._rb,
             run_id=rid,
@@ -505,22 +505,22 @@ class WikipediaCitationWorkflow:
 
     # --- SUBMITTED: verify ------------------------------------------------------
 
-    async def _verify(self, c: Contribution, ctx: RunContext) -> Advance:
+    async def _verify(self, task: Task, ctx: RunContext) -> Advance:
         tctx, rid = ctx.tool_ctx(), ctx.run_id
-        assert c.submission is not None and c.proposal is not None
-        ref = c.submission.external_ref
+        assert task.submission is not None and task.proposal is not None
+        ref = task.submission.external_ref
 
-        async with track_step(c, ctx, STEP_VERIFY_EDIT) as step:
+        async with track_step(task, ctx, STEP_VERIFY_EDIT) as step:
             if ref in (None, "dry-run"):
                 detail = "dry-run" if ref == "dry-run" else "no external ref"
                 await step.finish(WorkflowStepState.COMPLETED, detail)
                 transition(
-                    c, S.VERIFIED, runbook=self._rb, run_id=rid, step="verify", reason=detail
+                    task, S.VERIFIED, runbook=self._rb, run_id=rid, step="verify", reason=detail
                 )
                 return Advance(status="ok", reason="verified (dry-run)")
 
             vr = await VerifyEditTool().call(
-                VerifyEditRequest(title=c.proposal.payload.title, revid=int(ref)), tctx
+                VerifyEditRequest(title=task.proposal.payload.title, revid=int(ref)), tctx
             )
             if not vr.ok or vr.value is None:
                 if vr.error and vr.error.is_retryable():
@@ -528,7 +528,7 @@ class WikipediaCitationWorkflow:
                     return Advance(status="retryable_error", error=vr.error)
                 await step.finish(WorkflowStepState.SKIPPED, "verification unavailable")
                 transition(
-                    c,
+                    task,
                     S.VERIFIED,
                     runbook=self._rb,
                     run_id=rid,
@@ -539,9 +539,9 @@ class WikipediaCitationWorkflow:
 
             if vr.value.reverted:
                 await step.finish(WorkflowStepState.FAILED, "edit was reverted")
-                c.submission.outcome = "reverted"
+                task.submission.outcome = "reverted"
                 transition(
-                    c,
+                    task,
                     S.REVERTED,
                     runbook=self._rb,
                     run_id=rid,
@@ -551,5 +551,5 @@ class WikipediaCitationWorkflow:
                 return Advance(status="ok", reason="reverted")
 
             await step.finish(WorkflowStepState.COMPLETED, "edit present")
-            transition(c, S.VERIFIED, runbook=self._rb, run_id=rid, step="verify")
+            transition(task, S.VERIFIED, runbook=self._rb, run_id=rid, step="verify")
             return Advance(status="ok", reason="verified present")

@@ -202,8 +202,8 @@ class FetchArticleTool:
 
 class SubmitEditRequest(BaseModel):
     payload: WikiEditPayload
-    contribution_id: str
-    idempotency_key: str  # hash(contribution_id, payload); recorded for audit + dedup
+    task_id: str
+    idempotency_key: str  # hash(task_id, payload); recorded for audit + dedup
     bot: bool = False
     minor: bool = True
 
@@ -234,7 +234,7 @@ class SubmitEditTool:
             return ToolResult(
                 ok=True,
                 value=Submission(
-                    contribution_id=req.contribution_id,
+                    task_id=req.task_id,
                     external_ref="dry-run",
                     request_digest=_digest(
                         {"title": p.title, "baserevid": p.base_revid, "summary": p.summary}
@@ -266,7 +266,7 @@ class SubmitEditTool:
             return ToolResult(
                 ok=True,
                 value=Submission(
-                    contribution_id=req.contribution_id,
+                    task_id=req.task_id,
                     external_ref=str(new_revid) if new_revid is not None else None,
                     request_digest=_digest(
                         {"title": p.title, "baserevid": p.base_revid, "summary": p.summary}

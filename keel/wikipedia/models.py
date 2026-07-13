@@ -75,11 +75,11 @@ class WikiEditPayload(BaseModel):
     summary: str
 
 
-def wiki_contribution_type() -> type:
-    """The concrete Contribution[WikiLocator, WikiEditPayload] the store rebuilds on load.
+def wiki_task_type() -> type:
+    """The concrete Task[WikiLocator, WikiEditPayload] the store rebuilds on load.
 
     A function (not a module-level alias) to avoid importing core.types at module import
     time, which would create a cycle: core stays ignorant of this package."""
-    from keel.core.types import Contribution
+    from keel.core.types import Task
 
-    return Contribution[WikiLocator, WikiEditPayload]
+    return Task[WikiLocator, WikiEditPayload]

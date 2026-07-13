@@ -1,6 +1,6 @@
 """Shared runbook types: the Advance envelope and the actionable-state set.
 
-`Advance` is what a workflow returns after moving a contribution one checkpoint. The
+`Advance` is what a workflow returns after moving a task one checkpoint. The
 workflow has already applied its transitions (via states.transition); `Advance` only
 tells the executor how to schedule next: persist and continue (ok / gate_pending /
 fatal_error) or requeue for retry (retryable_error).
@@ -14,9 +14,9 @@ from pydantic import BaseModel
 
 from keel.core.errors import KeelError
 from keel.core.runtime import RunContext
-from keel.core.states import ContributionState
+from keel.core.states import TaskState
 from keel.core.types import (
-    Contribution,
+    Task,
     WorkflowStepExecution,
     WorkflowStepSpec,
     WorkflowStepState,
@@ -24,10 +24,10 @@ from keel.core.types import (
 
 # States the executor will pick up and drive forward. GATE_PENDING is excluded: it
 # waits for an out-of-band human decision (the review CLI), not the loop.
-ACTIONABLE: list[ContributionState] = [
-    ContributionState.DISCOVERED,
-    ContributionState.APPROVED,
-    ContributionState.SUBMITTED,
+ACTIONABLE: list[TaskState] = [
+    TaskState.DISCOVERED,
+    TaskState.APPROVED,
+    TaskState.SUBMITTED,
 ]
 
 
@@ -38,20 +38,22 @@ class Advance(BaseModel):
 
 
 class TrackedStep:
-    """Persist one operational step without changing contribution lifecycle state."""
+    """Persist one operational step without changing task lifecycle state."""
 
-    def __init__(self, c: Contribution, ctx: RunContext, spec: WorkflowStepSpec) -> None:
-        self._c = c
+    def __init__(self, task: Task, ctx: RunContext, spec: WorkflowStepSpec) -> None:
+        self._task = task
         self._ctx = ctx
         self._spec = spec
         self._execution: WorkflowStepExecution | None = None
         self._closed = False
 
     async def __aenter__(self) -> "TrackedStep":
-        self._execution = await self._ctx.store.start_step(self._c.id, self._ctx.run_id, self._spec)
+        self._execution = await self._ctx.store.start_step(
+            self._task.id, self._ctx.run_id, self._spec
+        )
         self._ctx.observer.event(
             "workflow.step.started",
-            contribution_id=self._c.id,
+            task_id=self._task.id,
             step_id=self._spec.id,
             attempt=self._execution.attempt,
         )
@@ -68,7 +70,7 @@ class TrackedStep:
         self._closed = True
         self._ctx.observer.event(
             "workflow.step.finished",
-            contribution_id=self._c.id,
+            task_id=self._task.id,
             step_id=self._spec.id,
             state=str(state),
             detail=detail,
@@ -84,19 +86,19 @@ class TrackedStep:
             await self.finish(WorkflowStepState.FAILED, repr(exc))
 
 
-def track_step(c: Contribution, ctx: RunContext, spec: WorkflowStepSpec) -> TrackedStep:
-    return TrackedStep(c, ctx, spec)
+def track_step(task: Task, ctx: RunContext, spec: WorkflowStepSpec) -> TrackedStep:
+    return TrackedStep(task, ctx, spec)
 
 
 @runtime_checkable
 class Workflow(Protocol):
     """A target's end-to-end, checkpoint-advancing state machine (Phase 1 primitive).
 
-    `advance` mutates `c` through legal transitions and returns an Advance. It must not
+    `advance` mutates `task` through legal transitions and returns an Advance. It must not
     persist; persistence and scheduling are the executor's job."""
 
     name: str
     version: str
     steps: tuple[WorkflowStepSpec, ...]
 
-    async def advance(self, c: Contribution, ctx: RunContext) -> Advance: ...
+    async def advance(self, task: Task, ctx: RunContext) -> Advance: ...

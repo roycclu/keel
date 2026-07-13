@@ -10,7 +10,7 @@ from keel.skills.base import BaseSkill
 
 
 class InvestigationInput(BaseModel):
-    contribution_id: str
+    task_id: str
     question: str
     observations: list[TraceObservation]
     source_trace_ids: list[str]
@@ -38,7 +38,7 @@ class ExplainDecision(BaseSkill[InvestigationInput, DecisionExplanation]):
             LLMMessage(
                 role=Role.USER,
                 content=(
-                    f"Contribution: {inp.contribution_id}\nQuestion: {inp.question}\n\n"
+                    f"Task: {inp.task_id}\nQuestion: {inp.question}\n\n"
                     f"Relevant trace observations:\n{records}"
                 ),
             ),

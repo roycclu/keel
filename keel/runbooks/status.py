@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from keel.core.states import TERMINAL
 from keel.core.types import (
-    Contribution,
+    Task,
     WorkflowStepExecution,
     WorkflowStepSpec,
     WorkflowStepState,
@@ -28,7 +28,7 @@ class WorkflowStepView(BaseModel):
 
 
 class WorkflowStatus(BaseModel):
-    contribution_id: str
+    task_id: str
     target: str
     summary: str
     lifecycle_state: str
@@ -39,7 +39,7 @@ class WorkflowStatus(BaseModel):
 
 
 def build_workflow_status(
-    contribution: Contribution,
+    task: Task,
     specs: tuple[WorkflowStepSpec, ...],
     executions: list[WorkflowStepExecution],
     *,
@@ -61,17 +61,17 @@ def build_workflow_status(
                     ordinal=spec.ordinal,
                     state=WorkflowStepState.COMPLETED,
                     attempts=1,
-                    started_at=contribution.opportunity.discovered.at,
-                    finished_at=contribution.opportunity.discovered.at,
+                    started_at=task.opportunity.discovered.at,
+                    finished_at=task.opportunity.discovered.at,
                     elapsed_ms=0,
-                    detail=contribution.opportunity.summary,
+                    detail=task.opportunity.summary,
                 )
             )
             continue
         if not attempts:
             state = (
                 WorkflowStepState.SKIPPED
-                if contribution.state in TERMINAL
+                if task.state in TERMINAL
                 else WorkflowStepState.PENDING
             )
             views.append(
@@ -114,10 +114,10 @@ def build_workflow_status(
         )
     completed = sum(view.state == WorkflowStepState.COMPLETED for view in views)
     return WorkflowStatus(
-        contribution_id=contribution.id,
-        target=contribution.target,
-        summary=contribution.opportunity.summary,
-        lifecycle_state=str(contribution.state),
+        task_id=task.id,
+        target=task.target,
+        summary=task.opportunity.summary,
+        lifecycle_state=str(task.state),
         current_step=current,
         completed_steps=completed,
         total_steps=len(views),
@@ -138,7 +138,7 @@ _SYMBOLS = {
 
 def render_workflow_status(status: WorkflowStatus) -> str:
     lines = [
-        f"{status.contribution_id}  {status.lifecycle_state}",
+        f"{status.task_id}  {status.lifecycle_state}",
         status.summary,
         "",
     ]

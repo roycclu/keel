@@ -1,4 +1,4 @@
-"""Keel: human-quality-gated agentic contribution pipelines.
+"""Keel: human-quality-gated agentic task pipelines.
 
 Phase 1 scope: a single workflow for Wikipedia [citation needed] remediation.
 See ARCHITECTURE.md for the full design and AGENTS.md for coding rules.

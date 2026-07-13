@@ -19,7 +19,7 @@ import httpx
 from keel.config import Settings
 
 if TYPE_CHECKING:
-    from keel.core.protocols import AuthProvider, ContributionTarget, GateProvider, StateStore
+    from keel.core.protocols import AuthProvider, GateProvider, StateStore, TaskTarget
     from keel.llm.client import LLMClient
     from keel.observability.observer import Observer
 
@@ -73,7 +73,7 @@ class RunContext:
 
     run_id: str
     store: "StateStore"
-    target: "ContributionTarget"
+    target: "TaskTarget"
     gate: "GateProvider"
     llm: "LLMClient"
     http: httpx.AsyncClient

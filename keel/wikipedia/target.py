@@ -1,4 +1,4 @@
-"""WikipediaTarget: the one ContributionTarget implementation in Phase 1.
+"""WikipediaTarget: the one TaskTarget implementation in Phase 1.
 
 Every method is pure (render/validate) or a single well-defined side effect
 (submit/reverse). No orchestration lives here - that is the workflow's job. This class
@@ -143,16 +143,16 @@ class WikipediaTarget:
 
     # --- live precondition re-check (read-only I/O) ---
 
-    async def preconditions(self, c, ctx: ToolContext) -> list[PreconditionResult]:
-        if c.proposal is None:
+    async def preconditions(self, task, ctx: ToolContext) -> list[PreconditionResult]:
+        if task.proposal is None:
             return [PreconditionResult(name="has_proposal", holds=False, detail="no proposal")]
         res = await FetchArticleTool().call(
-            FetchArticleRequest(title=c.opportunity.locator.title), ctx
+            FetchArticleRequest(title=task.opportunity.locator.title), ctx
         )
         if not res.ok or res.value is None:
             code = res.error.code if res.error else "unknown"
             return [PreconditionResult(name="article_fetchable", holds=False, detail=code)]
-        base = c.proposal.payload.base_revid
+        base = task.proposal.payload.base_revid
         current = res.value.revid
         return [
             PreconditionResult(
@@ -167,7 +167,7 @@ class WikipediaTarget:
     async def submit(self, payload: WikiEditPayload, ctx: ToolContext) -> Submission:
         key = hashlib.sha256(payload.model_dump_json().encode()).hexdigest()[:16]
         res = await SubmitEditTool().call(
-            SubmitEditRequest(payload=payload, contribution_id="", idempotency_key=key),
+            SubmitEditRequest(payload=payload, task_id="", idempotency_key=key),
             ctx,
         )
         if not res.ok or res.value is None:

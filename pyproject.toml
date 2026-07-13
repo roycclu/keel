@@ -1,7 +1,7 @@
 [project]
 name = "keel"
 version = "0.1.0"
-description = "Human-quality-gated agentic contribution pipelines. Phase 1: Wikipedia citation remediation."
+description = "Human-quality-gated agentic task pipelines. Phase 1: Wikipedia citation remediation."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

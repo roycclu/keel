@@ -1,30 +1,31 @@
 """SQLite-backed StateStore with optimistic concurrency.
 
-The contribution is stored as its JSON blob plus indexed columns (state, target,
+The task is stored as its JSON blob plus indexed columns (state, target,
 updated_at) for the loop's queries. `save` is a compare-and-swap on `version`: it
 updates only if the stored version still matches what the caller loaded, so two
-workers can never both advance the same contribution (ARCHITECTURE.md #7.3). SQLite
+workers can never both advance the same task (ARCHITECTURE.md #7.3). SQLite
 calls are sync; we run them in a thread so the async loop is never blocked.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from keel.core.protocols import QuerySpec, VersionConflict
-from keel.core.states import ContributionState
+from keel.core.states import TaskState
 from keel.core.types import (
-    Contribution,
+    Task,
     WorkflowStepExecution,
     WorkflowStepSpec,
     WorkflowStepState,
 )
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS contributions (
+CREATE TABLE IF NOT EXISTS tasks (
     id         TEXT PRIMARY KEY,
     target     TEXT NOT NULL,
     state      TEXT NOT NULL,
@@ -32,10 +33,10 @@ CREATE TABLE IF NOT EXISTS contributions (
     updated_at TEXT NOT NULL,
     data       TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_state ON contributions (target, state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_state ON tasks (target, state, updated_at);
 CREATE TABLE IF NOT EXISTS workflow_steps (
     id              TEXT PRIMARY KEY,
-    contribution_id TEXT NOT NULL,
+    task_id         TEXT NOT NULL,
     run_id          TEXT NOT NULL,
     step_id         TEXT NOT NULL,
     label           TEXT NOT NULL,
@@ -47,19 +48,85 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
     detail          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_steps
-    ON workflow_steps (contribution_id, ordinal, started_at);
+    ON workflow_steps (task_id, ordinal, started_at);
 """
 
 
 class SqliteStateStore:
-    """Concrete StateStore. Parameterized by the contribution type so it can rebuild
-    the generic model on load (Phase 1 passes Contribution[WikiLocator, WikiEditPayload])."""
+    """Concrete StateStore. Parameterized by the task type so it can rebuild
+    the generic model on load (Phase 1 passes Task[WikiLocator, WikiEditPayload])."""
 
-    def __init__(self, path: str, contribution_type: type[Contribution]) -> None:
+    def __init__(self, path: str, task_type: type[Task]) -> None:
         self._path = path
-        self._type = contribution_type
+        self._type = task_type
         with self._conn() as conn:
+            self._migrate_legacy_schema(conn)
             conn.executescript(_SCHEMA)
+
+    @classmethod
+    def _migrate_legacy_schema(cls, conn: sqlite3.Connection) -> None:
+        """Rename the pre-Task schema and payload keys without changing row IDs."""
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        legacy_table = "contributions"
+        if legacy_table in tables and "tasks" in tables:
+            raise RuntimeError(
+                "database contains both legacy and current task tables; refusing to merge"
+            )
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if legacy_table in tables:
+                conn.execute(f"ALTER TABLE {legacy_table} RENAME TO tasks")
+
+            if "workflow_steps" in tables:
+                columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(workflow_steps)").fetchall()
+                }
+                legacy_column = "contribution_id"
+                if legacy_column in columns and "task_id" in columns:
+                    raise RuntimeError(
+                        "workflow_steps contains both legacy and current task ID columns"
+                    )
+                if legacy_column in columns:
+                    conn.execute(
+                        f"ALTER TABLE workflow_steps RENAME COLUMN {legacy_column} TO task_id"
+                    )
+
+            task_table_exists = legacy_table in tables or "tasks" in tables
+            if task_table_exists:
+                legacy_key = "contribution_id"
+                rows = conn.execute(
+                    "SELECT id, data FROM tasks WHERE instr(data, ?) > 0",
+                    (f'"{legacy_key}"',),
+                ).fetchall()
+                for row in rows:
+                    data = cls._rename_legacy_payload_keys(json.loads(row["data"]))
+                    conn.execute(
+                        "UPDATE tasks SET data = ? WHERE id = ?",
+                        (json.dumps(data, separators=(",", ":")), row["id"]),
+                    )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @classmethod
+    def _rename_legacy_payload_keys(cls, value: object) -> object:
+        if isinstance(value, dict):
+            legacy_key = "contribution_id"
+            return {
+                ("task_id" if key == legacy_key else key): cls._rename_legacy_payload_keys(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._rename_legacy_payload_keys(item) for item in value]
+        return value
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, isolation_level=None)  # autocommit
@@ -70,55 +137,62 @@ class SqliteStateStore:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    async def create(self, c: Contribution) -> None:
+    async def create(self, task: Task) -> None:
         def _work() -> None:
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO contributions (id, target, state, version, updated_at, data) "
+                    "INSERT INTO tasks (id, target, state, version, updated_at, data) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (c.id, c.target, str(c.state), c.version, self._now(), c.model_dump_json()),
+                    (
+                        task.id,
+                        task.target,
+                        str(task.state),
+                        task.version,
+                        self._now(),
+                        task.model_dump_json(),
+                    ),
                 )
 
         await asyncio.to_thread(_work)
 
-    async def load(self, contribution_id: str) -> Contribution:
-        def _work() -> Contribution:
+    async def load(self, task_id: str) -> Task:
+        def _work() -> Task:
             with self._conn() as conn:
                 row = conn.execute(
-                    "SELECT data FROM contributions WHERE id = ?", (contribution_id,)
+                    "SELECT data FROM tasks WHERE id = ?", (task_id,)
                 ).fetchone()
             if row is None:
-                raise KeyError(f"no contribution {contribution_id}")
+                raise KeyError(f"no task {task_id}")
             return self._type.model_validate_json(row["data"])
 
         return await asyncio.to_thread(_work)
 
-    async def save(self, c: Contribution, expected_version: int) -> None:
+    async def save(self, task: Task, expected_version: int) -> None:
         def _work() -> None:
             new_version = expected_version + 1
             with self._conn() as conn:
                 cur = conn.execute(
-                    "UPDATE contributions SET data = ?, state = ?, version = ?, updated_at = ? "
+                    "UPDATE tasks SET data = ?, state = ?, version = ?, updated_at = ? "
                     "WHERE id = ? AND version = ?",
                     (
-                        c.model_copy(update={"version": new_version}).model_dump_json(),
-                        str(c.state),
+                        task.model_copy(update={"version": new_version}).model_dump_json(),
+                        str(task.state),
                         new_version,
                         self._now(),
-                        c.id,
+                        task.id,
                         expected_version,
                     ),
                 )
                 if cur.rowcount == 0:
                     raise VersionConflict(
-                        f"{c.id} changed under us (expected version {expected_version})"
+                        f"{task.id} changed under us (expected version {expected_version})"
                     )
-            c.version = new_version
+            task.version = new_version
 
         await asyncio.to_thread(_work)
 
-    async def query(self, spec: QuerySpec) -> list[Contribution]:
-        def _work() -> list[Contribution]:
+    async def query(self, spec: QuerySpec) -> list[Task]:
+        def _work() -> list[Task]:
             clauses, params = [], []
             if spec.target:
                 clauses.append("target = ?")
@@ -127,7 +201,7 @@ class SqliteStateStore:
                 clauses.append(f"state IN ({','.join('?' * len(spec.states))})")
                 params.extend(str(s) for s in spec.states)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            sql = f"SELECT data FROM contributions {where} ORDER BY updated_at ASC LIMIT ?"
+            sql = f"SELECT data FROM tasks {where} ORDER BY updated_at ASC LIMIT ?"
             params.append(spec.limit)
             with self._conn() as conn:
                 rows = conn.execute(sql, params).fetchall()
@@ -136,25 +210,25 @@ class SqliteStateStore:
         return await asyncio.to_thread(_work)
 
     async def load_next_actionable(
-        self, target: str, states: list[ContributionState]
-    ) -> Contribution | None:
+        self, target: str, states: list[TaskState]
+    ) -> Task | None:
         results = await self.query(QuerySpec(target=target, states=states, limit=1))
         return results[0] if results else None
 
     async def start_step(
-        self, contribution_id: str, run_id: str, spec: WorkflowStepSpec
+        self, task_id: str, run_id: str, spec: WorkflowStepSpec
     ) -> WorkflowStepExecution:
         def _work() -> WorkflowStepExecution:
             with self._conn() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     "SELECT COALESCE(MAX(attempt), 0) AS attempt FROM workflow_steps "
-                    "WHERE contribution_id = ? AND step_id = ?",
-                    (contribution_id, spec.id),
+                    "WHERE task_id = ? AND step_id = ?",
+                    (task_id, spec.id),
                 ).fetchone()
                 execution = WorkflowStepExecution(
                     id=uuid.uuid4().hex,
-                    contribution_id=contribution_id,
+                    task_id=task_id,
                     run_id=run_id,
                     step_id=spec.id,
                     label=spec.label,
@@ -165,11 +239,11 @@ class SqliteStateStore:
                 )
                 conn.execute(
                     "INSERT INTO workflow_steps "
-                    "(id, contribution_id, run_id, step_id, label, ordinal, attempt, state, "
+                    "(id, task_id, run_id, step_id, label, ordinal, attempt, state, "
                     "started_at, finished_at, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         execution.id,
-                        execution.contribution_id,
+                        execution.task_id,
                         execution.run_id,
                         execution.step_id,
                         execution.label,
@@ -213,13 +287,13 @@ class SqliteStateStore:
 
         return await asyncio.to_thread(_work)
 
-    async def list_steps(self, contribution_id: str) -> list[WorkflowStepExecution]:
+    async def list_steps(self, task_id: str) -> list[WorkflowStepExecution]:
         def _work() -> list[WorkflowStepExecution]:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT * FROM workflow_steps WHERE contribution_id = ? "
+                    "SELECT * FROM workflow_steps WHERE task_id = ? "
                     "ORDER BY ordinal ASC, started_at ASC",
-                    (contribution_id,),
+                    (task_id,),
                 ).fetchall()
             return [self._step_from_row(row) for row in rows]
 
@@ -229,7 +303,7 @@ class SqliteStateStore:
     def _step_from_row(row: sqlite3.Row) -> WorkflowStepExecution:
         return WorkflowStepExecution(
             id=row["id"],
-            contribution_id=row["contribution_id"],
+            task_id=row["task_id"],
             run_id=row["run_id"],
             step_id=row["step_id"],
             label=row["label"],
