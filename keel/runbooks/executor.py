@@ -9,6 +9,7 @@ spinning in place.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from keel.core.runtime import RunContext
@@ -35,7 +36,50 @@ class Executor:
         ctx = self._make_ctx(task)
         rb = f"{self._workflow.name}@{self._workflow.version}"
         try:
-            await self._workflow.advance(task, ctx)
+            outcome = await self._workflow.advance(task, ctx)
+            if outcome.status == "retryable_error":
+                error = outcome.error
+                if error is None:
+                    raise RuntimeError("retryable workflow outcome is missing its typed error")
+                checkpoint = task.state
+                task.retry_count = (
+                    task.retry_count + 1 if task.retry_state == checkpoint else 1
+                )
+                task.retry_state = checkpoint
+                task.last_error = error
+                if task.retry_count >= ctx.settings.operation_max_attempts:
+                    task.next_attempt_at = None
+                    transition(
+                        task,
+                        TaskState.FAILED,
+                        runbook=rb,
+                        run_id=ctx.run_id,
+                        reason=(
+                            f"{error.code}: retry budget exhausted after "
+                            f"{task.retry_count} total attempts"
+                        ),
+                    )
+                    ctx.observer.event(
+                        "advance.retry_exhausted",
+                        id=task.id,
+                        code=error.code,
+                        attempts=task.retry_count,
+                    )
+                else:
+                    delay = error.retry_after_s or min(2 ** (task.retry_count - 1), 60)
+                    task.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                    ctx.observer.event(
+                        "advance.retry_scheduled",
+                        id=task.id,
+                        code=error.code,
+                        attempt=task.retry_count,
+                        next_attempt_at=task.next_attempt_at.isoformat(),
+                    )
+            else:
+                task.retry_count = 0
+                task.retry_state = None
+                task.next_attempt_at = None
+                task.last_error = None
         except Exception as exc:  # unexpected: fail loudly, do not lose the task
             ctx.observer.event("advance.crash", id=task.id, error=repr(exc))
             if task.state not in (TaskState.FAILED,):

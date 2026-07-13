@@ -311,6 +311,23 @@ class Task(BaseModel, Generic[Locator, Payload]):
     history: list[Transition] = Field(
         default_factory=list, description="Append-only lifecycle transition audit log."
     )
+    retry_count: int = Field(
+        default=0,
+        ge=0,
+        description="Attempts consumed for the current retry_state checkpoint.",
+    )
+    retry_state: TaskState | None = Field(
+        default=None,
+        description="Lifecycle checkpoint whose transient retry budget is active.",
+    )
+    next_attempt_at: datetime | None = Field(
+        default=None,
+        description="UTC time before which the executor must not select this task.",
+    )
+    last_error: KeelError | None = Field(
+        default=None,
+        description="Most recent typed transient error, cleared after successful advancement.",
+    )
     version: int = Field(
         default=0,
         description="Optimistic-lock version incremented after each persisted update.",

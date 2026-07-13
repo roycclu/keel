@@ -78,6 +78,21 @@ KEEL_LLM_HTTP_REFERER=<optional-project-url>
 KEEL_LLM_APP_TITLE=Keel
 ```
 
+Discovery scans five pages by default and creates up to five tasks for the distinct
+`[citation needed]` tags on each page. The per-page value accepts 1 through 10:
+
+```bash
+keel discover --limit 5 --tags-per-page 5
+keel run --dry-run
+```
+
+Rescanning the same article revision does not duplicate existing opportunities.
+Research pools results from up to two search hints, then performs full reliability and
+claim-support evaluation on at most five candidate sources per task. Retryable workflow
+operations receive three total attempts, including the initial attempt. These defaults
+can be changed with `KEEL_DISCOVERY_TAGS_PER_PAGE`, `KEEL_RESEARCH_CANDIDATE_LIMIT`, and
+`KEEL_OPERATION_MAX_ATTEMPTS`.
+
 Brave LLM Context is the default research mode. It returns query-relevant page passages
 grouped by source URL instead of a single search-result description. Context size is
 bounded by token, URL, and passage counts; promising high-reliability sources that still

@@ -149,7 +149,9 @@ class Runbook(Protocol[RunbookInput, RunbookOutput]):
 
 @runtime_checkable
 class StateStore(Protocol):
-    async def create(self, task: Task) -> None: ...
+    async def create(self, task: Task) -> bool:
+        """Insert a task unless its ID or opportunity already exists."""
+        ...
 
     async def load(self, task_id: str) -> Task: ...
 

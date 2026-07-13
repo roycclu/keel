@@ -91,6 +91,9 @@ def test_from_env_loads_web_context_settings(monkeypatch, tmp_path):
         "KEEL_WEB_CONTEXT_MAX_SNIPPETS_PER_URL=4\n"
         "KEEL_WEB_CONTEXT_THRESHOLD=balanced\n"
         "KEEL_WEB_FETCH_FALLBACK_MAX_URLS=2\n"
+        "KEEL_DISCOVERY_TAGS_PER_PAGE=7\n"
+        "KEEL_RESEARCH_CANDIDATE_LIMIT=5\n"
+        "KEEL_OPERATION_MAX_ATTEMPTS=3\n"
     )
     names = [line.split("=", 1)[0] for line in env_file.read_text().splitlines()]
     for name in names:
@@ -107,3 +110,6 @@ def test_from_env_loads_web_context_settings(monkeypatch, tmp_path):
     assert settings.web_context_max_snippets_per_url == 4
     assert settings.web_context_threshold == "balanced"
     assert settings.web_fetch_fallback_max_urls == 2
+    assert settings.discovery_tags_per_page == 7
+    assert settings.research_candidate_limit == 5
+    assert settings.operation_max_attempts == 3

@@ -20,3 +20,12 @@ def test_command_help_exits_without_starting_application(capsys) -> None:
     assert "Advance actionable tasks through the workflow." in output
     assert "--max-steps MAX_STEPS" in output
     assert "--dry-run" in output
+
+
+def test_discovery_tag_limit_is_bounded() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args(["discover"]).tags_per_page is None
+    assert parser.parse_args(["discover", "--tags-per-page", "5"]).tags_per_page == 5
+    with pytest.raises(SystemExit):
+        parser.parse_args(["discover", "--tags-per-page", "11"])

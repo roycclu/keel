@@ -26,12 +26,14 @@ from keel.core.types import (
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
-    id         TEXT PRIMARY KEY,
-    target     TEXT NOT NULL,
-    state      TEXT NOT NULL,
-    version    INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    data       TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    opportunity_id  TEXT NOT NULL,
+    target          TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    updated_at      TEXT NOT NULL,
+    next_attempt_at TEXT,
+    data            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_state ON tasks (target, state, updated_at);
 CREATE TABLE IF NOT EXISTS workflow_steps (
@@ -51,6 +53,13 @@ CREATE INDEX IF NOT EXISTS idx_workflow_steps
     ON workflow_steps (task_id, ordinal, started_at);
 """
 
+_RUNTIME_INDEXES = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_opportunity
+    ON tasks (target, opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_task_actionable
+    ON tasks (target, state, next_attempt_at, updated_at);
+"""
+
 
 class SqliteStateStore:
     """Concrete StateStore. Parameterized by the task type so it can rebuild
@@ -62,6 +71,8 @@ class SqliteStateStore:
         with self._conn() as conn:
             self._migrate_legacy_schema(conn)
             conn.executescript(_SCHEMA)
+            self._migrate_runtime_schema(conn)
+            conn.executescript(_RUNTIME_INDEXES)
 
     @classmethod
     def _migrate_legacy_schema(cls, conn: sqlite3.Connection) -> None:
@@ -128,6 +139,34 @@ class SqliteStateStore:
             return [cls._rename_legacy_payload_keys(item) for item in value]
         return value
 
+    @staticmethod
+    def _migrate_runtime_schema(conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "opportunity_id" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN opportunity_id TEXT")
+            if "next_attempt_at" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN next_attempt_at TEXT")
+
+            rows = conn.execute(
+                "SELECT id, data FROM tasks WHERE opportunity_id IS NULL"
+            ).fetchall()
+            for row in rows:
+                data = json.loads(row["data"])
+                opportunity_id = data.get("opportunity", {}).get("id")
+                if opportunity_id:
+                    conn.execute(
+                        "UPDATE tasks SET opportunity_id = ? WHERE id = ?",
+                        (opportunity_id, row["id"]),
+                    )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, isolation_level=None)  # autocommit
         conn.row_factory = sqlite3.Row
@@ -137,23 +176,27 @@ class SqliteStateStore:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    async def create(self, task: Task) -> None:
-        def _work() -> None:
+    async def create(self, task: Task) -> bool:
+        def _work() -> bool:
             with self._conn() as conn:
-                conn.execute(
-                    "INSERT INTO tasks (id, target, state, version, updated_at, data) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO tasks "
+                    "(id, opportunity_id, target, state, version, updated_at, "
+                    "next_attempt_at, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         task.id,
+                        task.opportunity.id,
                         task.target,
                         str(task.state),
                         task.version,
                         self._now(),
+                        task.next_attempt_at.isoformat() if task.next_attempt_at else None,
                         task.model_dump_json(),
                     ),
                 )
+                return cursor.rowcount == 1
 
-        await asyncio.to_thread(_work)
+        return await asyncio.to_thread(_work)
 
     async def load(self, task_id: str) -> Task:
         def _work() -> Task:
@@ -172,13 +215,15 @@ class SqliteStateStore:
             new_version = expected_version + 1
             with self._conn() as conn:
                 cur = conn.execute(
-                    "UPDATE tasks SET data = ?, state = ?, version = ?, updated_at = ? "
+                    "UPDATE tasks SET data = ?, state = ?, version = ?, updated_at = ?, "
+                    "next_attempt_at = ? "
                     "WHERE id = ? AND version = ?",
                     (
                         task.model_copy(update={"version": new_version}).model_dump_json(),
                         str(task.state),
                         new_version,
                         self._now(),
+                        task.next_attempt_at.isoformat() if task.next_attempt_at else None,
                         task.id,
                         expected_version,
                     ),
@@ -212,8 +257,20 @@ class SqliteStateStore:
     async def load_next_actionable(
         self, target: str, states: list[TaskState]
     ) -> Task | None:
-        results = await self.query(QuerySpec(target=target, states=states, limit=1))
-        return results[0] if results else None
+        def _work() -> Task | None:
+            placeholders = ",".join("?" for _ in states)
+            sql = (
+                "SELECT data FROM tasks WHERE target = ? "
+                f"AND state IN ({placeholders}) "
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                "ORDER BY updated_at ASC LIMIT 1"
+            )
+            params = [target, *(str(state) for state in states), self._now()]
+            with self._conn() as conn:
+                row = conn.execute(sql, params).fetchone()
+            return self._type.model_validate_json(row["data"]) if row else None
+
+        return await asyncio.to_thread(_work)
 
     async def start_step(
         self, task_id: str, run_id: str, spec: WorkflowStepSpec

@@ -89,7 +89,7 @@ class App:
             budget=Budget(total=self.settings.per_run_token_budget),
         )
 
-    async def discover(self, limit_pages: int, tags_per_page: int) -> None:
+    async def discover(self, limit_pages: int, tags_per_page: int | None) -> None:
         ctx = RunContext(
             run_id="discover",
             store=self.store,
@@ -101,13 +101,19 @@ class App:
             observer=self._observer("discover"),
             budget=Budget(total=None),
         )
+        effective_tags_per_page = tags_per_page or self.settings.discovery_tags_per_page
         tasks = await self.workflow.discover(
-            ctx, limit_pages=limit_pages, tags_per_page=tags_per_page
+            ctx,
+            limit_pages=limit_pages,
+            tags_per_page=effective_tags_per_page,
         )
+        created = 0
         for task in tasks:
-            await self.store.create(task)
-            print(f"discovered {task.id[:8]}  {task.opportunity.summary}")
-        print(f"\n{len(tasks)} task(s) created.")
+            if await self.store.create(task):
+                created += 1
+                print(f"discovered {task.id[:8]}  {task.opportunity.summary}")
+        duplicates = len(tasks) - created
+        print(f"\n{created} task(s) created; {duplicates} duplicate(s) skipped.")
 
     async def run(self, max_steps: int) -> None:
         executor = Executor(self.store, self.workflow, self._ctx)
@@ -382,7 +388,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="keel",
         description="Discover and resolve Wikipedia citation-needed tasks.",
         epilog="""examples:
-  keel discover --limit 5 --tags-per-page 1
+  keel discover --limit 5 --tags-per-page 5
   keel run --max-steps 10 --dry-run
   keel status
   keel workflow TASK_ID --watch
@@ -401,7 +407,14 @@ Run `keel COMMAND --help` for command-specific options.""",
         description="Find citation-needed tags and create tasks.",
     )
     p_disc.add_argument("--limit", type=int, default=5, help="max pages to scan")
-    p_disc.add_argument("--tags-per-page", type=int, default=1, help="max tasks to create per page")
+    p_disc.add_argument(
+        "--tags-per-page",
+        type=int,
+        choices=range(1, 11),
+        default=None,
+        metavar="1..10",
+        help="max tasks per page (default: KEEL_DISCOVERY_TAGS_PER_PAGE or 5)",
+    )
 
     p_run = sub.add_parser(
         "run",

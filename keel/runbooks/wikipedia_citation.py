@@ -119,6 +119,26 @@ def _host(url: str) -> str:
     return urlsplit(url).netloc or None
 
 
+def _bounded_candidates(batches: list[list[SearchHit]], limit: int) -> list[SearchHit]:
+    """Select unique candidates round-robin so each search hint contributes."""
+    selected: list[SearchHit] = []
+    seen_urls: set[str] = set()
+    width = max((len(batch) for batch in batches), default=0)
+    for index in range(width):
+        for batch in batches:
+            if index >= len(batch):
+                continue
+            candidate = batch[index]
+            url = str(candidate.url)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            selected.append(candidate)
+            if len(selected) == limit:
+                return selected
+    return selected
+
+
 def _select_covering_sources(
     evidence: list[Evidence], claims: list[str]
 ) -> tuple[list[Source], list[Evidence]]:
@@ -192,7 +212,7 @@ class WikipediaCitationWorkflow:
     # --- discovery: create DISCOVERED tasks ----------------------------
 
     async def discover(
-        self, ctx: RunContext, *, limit_pages: int = 5, tags_per_page: int = 1
+        self, ctx: RunContext, *, limit_pages: int = 5, tags_per_page: int = 5
     ) -> list[Task]:
         """Find citation-needed tags and turn each into a fresh Task.
 
@@ -307,7 +327,6 @@ class WikipediaCitationWorkflow:
         atomic_claims = list(dict.fromkeys(claim.atomic_claims or [claim.claim_text]))
         coverage: dict[str, list[Evidence]] = {atomic: [] for atomic in atomic_claims}
         verified: list[Evidence] = []
-        seen_urls: set[str] = set()
         fetched_urls = 0
         fetch_url = FetchUrlTool()
 
@@ -375,6 +394,7 @@ class WikipediaCitationWorkflow:
                 coverage[atomic].append(evidence)
                 verified.append(evidence)
 
+        candidate_batches: list[list[SearchHit]] = []
         for hint in claim.search_hints[:MAX_HINTS]:
             async with track_step(task, ctx, STEP_SEARCH) as step:
                 search = await WebSearchTool().call(WebSearchRequest(query=hint, k=SEARCH_K), tctx)
@@ -392,42 +412,50 @@ class WikipediaCitationWorkflow:
                     input={"query": hint, "k": SEARCH_K},
                     output=search.value.model_dump(mode="json"),
                 )
-            for hit_result in search.value.hits:
-                url = str(hit_result.url)
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                reliability = await assess(hit_result)
-                if reliability != Reliability.HIGH:
-                    continue
+            candidate_batches.append(search.value.hits)
 
-                await verify(
-                    hit_result,
-                    hit_result.passages,
-                    hit_result.retrieval_method,
-                    reliability,
-                )
-                missing = [atomic for atomic in atomic_claims if not coverage[atomic]]
-                if missing and fetched_urls < ctx.settings.web_fetch_fallback_max_urls:
-                    fetched_urls += 1
-                    fetched = await fetch_url.call(FetchUrlRequest(url=hit_result.url), tctx)
-                    if fetched.ok and fetched.value is not None:
-                        direct_passages = select_relevant_passages(fetched.value.text, missing)
-                        ctx.observer.event(
-                            "research.source.enriched",
-                            observation_type="retriever",
-                            input={"url": url, "claims": missing},
-                            output={"passages": direct_passages},
+        candidates = _bounded_candidates(
+            candidate_batches, ctx.settings.research_candidate_limit
+        )
+        ctx.observer.event(
+            "research.candidates.selected",
+            observation_type="retriever",
+            output={
+                "limit": ctx.settings.research_candidate_limit,
+                "urls": [str(candidate.url) for candidate in candidates],
+            },
+        )
+        for hit_result in candidates:
+            url = str(hit_result.url)
+            reliability = await assess(hit_result)
+            if reliability != Reliability.HIGH:
+                continue
+
+            await verify(
+                hit_result,
+                hit_result.passages,
+                hit_result.retrieval_method,
+                reliability,
+            )
+            missing = [atomic for atomic in atomic_claims if not coverage[atomic]]
+            if missing and fetched_urls < ctx.settings.web_fetch_fallback_max_urls:
+                fetched_urls += 1
+                fetched = await fetch_url.call(FetchUrlRequest(url=hit_result.url), tctx)
+                if fetched.ok and fetched.value is not None:
+                    direct_passages = select_relevant_passages(fetched.value.text, missing)
+                    ctx.observer.event(
+                        "research.source.enriched",
+                        observation_type="retriever",
+                        input={"url": url, "claims": missing},
+                        output={"passages": direct_passages},
+                    )
+                    if direct_passages:
+                        await verify(
+                            hit_result,
+                            direct_passages,
+                            "direct_fetch",
+                            reliability,
                         )
-                        if direct_passages:
-                            await verify(
-                                hit_result,
-                                direct_passages,
-                                "direct_fetch",
-                                reliability,
-                            )
-                if all(coverage.values()):
-                    break
             if all(coverage.values()):
                 break
 

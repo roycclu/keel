@@ -110,12 +110,14 @@ async def test_legacy_database_is_migrated_to_tasks_in_place(tmp_path: Path) -> 
     with sqlite3.connect(database) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
         columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_steps)")}
+        task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
         payload = conn.execute("SELECT data FROM tasks WHERE id = 'task-1'").fetchone()[0]
 
     assert "tasks" in tables
     assert "contributions" not in tables
     assert "task_id" in columns
     assert "contribution_id" not in columns
+    assert {"opportunity_id", "next_attempt_at"} <= task_columns
     assert '"task_id"' in payload
     assert '"contribution_id"' not in payload
 

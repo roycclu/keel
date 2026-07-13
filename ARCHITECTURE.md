@@ -395,7 +395,7 @@ gate:
 output: ResearchCitationOutput     # { evidence: list[Evidence] }
 on_success: transition(DRAFTED)
 errors:
-  web_search.rate_limited: retryable(backoff=exponential, max=5)
+  web_search.rate_limited: retryable(backoff=exponential, max_attempts=3)
   web_search.no_results: fatal(transition(ABANDONED))
 ```
 
@@ -424,6 +424,11 @@ loop:
 - **Inspectable:** the loop is ~15 lines and does nothing an operator can't read.
 - **Restartable:** state is loaded from and saved to `StateStore` every iteration. Kill the process mid-loop; the next worker picks up the same task at its last committed state. `save` uses compare-and-swap on `version` so two workers never collide.
 - **This is the Temporal influence** without adopting Temporal: durable state + idempotent steps + explicit retries. (We keep Temporal as an optional *executor backend* — see Open Questions §17.)
+- **Volume is bounded at discovery and research:** discovery creates up to 5 tasks per
+  scanned page by default, configurable from 1 to 10. Research pools search results but
+  fully evaluates at most 5 candidate sources per task.
+- **Retries are bounded:** retryable operations receive 3 total attempts, including the
+  initial attempt. Persisted retry state and `next_attempt_at` make backoff restart-safe.
 
 ---
 

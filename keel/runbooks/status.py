@@ -35,6 +35,8 @@ class WorkflowStatus(BaseModel):
     current_step: str | None
     completed_steps: int
     total_steps: int
+    retry_count: int
+    next_attempt_at: datetime | None
     steps: list[WorkflowStepView]
 
 
@@ -121,6 +123,8 @@ def build_workflow_status(
         current_step=current,
         completed_steps=completed,
         total_steps=len(views),
+        retry_count=task.retry_count,
+        next_attempt_at=task.next_attempt_at,
         steps=views,
     )
 
@@ -142,11 +146,21 @@ def render_workflow_status(status: WorkflowStatus) -> str:
         status.summary,
         "",
     ]
+    if status.retry_count:
+        retry_detail = f"retry attempt {status.retry_count}"
+        if status.next_attempt_at:
+            retry_detail += f"; next attempt at {status.next_attempt_at.isoformat()}"
+        lines.extend([retry_detail, ""])
     for step in status.steps:
         elapsed = ""
         if step.elapsed_ms is not None:
             elapsed = f"  {step.elapsed_ms / 1000:.1f}s"
-        attempts = f"  attempts={step.attempts}" if step.attempts > 1 else ""
+        counter_name = {
+            "research.search_sources": "queries",
+            "research.verify_support": "checks",
+            "research.assess_reliability": "candidates",
+        }.get(step.id, "attempts")
+        attempts = f"  {counter_name}={step.attempts}" if step.attempts > 1 else ""
         lines.append(
             f"{_SYMBOLS[step.state]} {step.label:<31} {str(step.state):<9}{elapsed}{attempts}"
         )

@@ -39,11 +39,14 @@ class Settings(BaseModel):
     web_context_max_snippets_per_url: int = Field(default=3, ge=1, le=100)
     web_context_threshold: Literal["strict", "balanced", "lenient", "disabled"] = "strict"
     web_fetch_fallback_max_urls: int = Field(default=3, ge=0, le=10)
+    discovery_tags_per_page: int = Field(default=5, ge=1, le=10)
+    research_candidate_limit: int = Field(default=5, ge=1, le=20)
 
     # --- execution ---
     http_timeout_s: float = 30.0
     sqlite_path: str = "keel.db"
     per_run_token_budget: int = 200_000  # hard ceiling enforced by the runbook loop
+    operation_max_attempts: int = Field(default=3, ge=1, le=10)
     dry_run_submit: bool = False  # when true, submit renders + logs the diff, posts nothing
 
     # --- observability ---
@@ -100,7 +103,19 @@ class Settings(BaseModel):
                 "KEEL_WEB_FETCH_FALLBACK_MAX_URLS",
                 cls.model_fields["web_fetch_fallback_max_urls"].default,
             ),
+            discovery_tags_per_page=env.get(
+                "KEEL_DISCOVERY_TAGS_PER_PAGE",
+                cls.model_fields["discovery_tags_per_page"].default,
+            ),
+            research_candidate_limit=env.get(
+                "KEEL_RESEARCH_CANDIDATE_LIMIT",
+                cls.model_fields["research_candidate_limit"].default,
+            ),
             sqlite_path=env.get("KEEL_SQLITE_PATH", cls.model_fields["sqlite_path"].default),
+            operation_max_attempts=env.get(
+                "KEEL_OPERATION_MAX_ATTEMPTS",
+                cls.model_fields["operation_max_attempts"].default,
+            ),
             observability_backend=env.get(
                 "KEEL_OBSERVABILITY_BACKEND",
                 cls.model_fields["observability_backend"].default,

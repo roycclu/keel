@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from keel.core.errors import TargetOperationError, ValidationIssue
@@ -81,8 +80,18 @@ class WikipediaTarget:
         d = raw.data
         if not d.get("title") or not d.get("tag_markup"):
             return None
+        identity = {
+            "target": self.id,
+            "title": d["title"],
+            "section": d.get("section"),
+            "tag_markup": " ".join(str(d["tag_markup"]).split()).casefold(),
+            "occurrence": int(d.get("occurrence", 0)),
+        }
+        opportunity_id = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, ensure_ascii=True).encode()
+        ).hexdigest()[:32]
         return Opportunity[WikiLocator](
-            id=uuid.uuid4().hex,
+            id=opportunity_id,
             target=self.id,
             locator=WikiLocator(
                 title=d["title"],
