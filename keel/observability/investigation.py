@@ -17,6 +17,7 @@ from keel.core.types import TraceObservation
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
+    from langfuse.api.commons.types.observation_v2 import ObservationV2
 
 _DECISION_NAMES = (
     "advance.done",
@@ -60,20 +61,33 @@ class LangfuseTraceReader:
         while True:
             response = self._client.api.observations.get_many(
                 trace_id=trace_id,
-                fields="core,basic,usage",
                 limit=100,
                 cursor=cursor,
-                parse_io_as_json=True,
                 from_start_time=from_time,
                 to_start_time=to_time,
             )
-            output.extend(
-                TraceObservation.model_validate(item.model_dump(mode="json"))
-                for item in response.data
-            )
+            output.extend(self._map_observation(item, trace_id) for item in response.data)
             cursor = response.meta.cursor
             if not cursor:
                 return output
+
+    @staticmethod
+    def _map_observation(item: "ObservationV2", requested_trace_id: str) -> TraceObservation:
+        if item.trace_id is not None and item.trace_id != requested_trace_id:
+            raise ValueError(
+                f"Langfuse returned trace {item.trace_id!r} while reading "
+                f"{requested_trace_id!r}"
+            )
+        return TraceObservation(
+            id=item.id,
+            trace_id=requested_trace_id,
+            name=item.name or "<unnamed>",
+            type=item.type,
+            input=item.input,
+            output=item.output,
+            metadata=item.metadata,
+            start_time=item.start_time,
+        )
 
 
 def select_relevant_observations(

@@ -147,8 +147,8 @@ def test_select_relevant_observations_prioritizes_decision_records() -> None:
 
 class ApiObservation(BaseModel):
     id: str
-    trace_id: str
-    name: str
+    trace_id: str | None = None
+    name: str | None = None
     type: str
     input: object | None = None
     output: object | None = None
@@ -160,7 +160,6 @@ class ApiObservation(BaseModel):
 async def test_trace_reader_maps_langfuse_response() -> None:
     item = ApiObservation(
         id="obs-1",
-        trace_id="trace-1",
         name="advance.done",
         type="SPAN",
         start_time=datetime.now(timezone.utc),
@@ -178,6 +177,28 @@ async def test_trace_reader_maps_langfuse_response() -> None:
     observations = await reader.read(["trace-1"], from_time=now, to_time=now)
 
     assert observations[0].id == "obs-1"
+    assert observations[0].trace_id == "trace-1"
+
+
+@pytest.mark.asyncio
+async def test_trace_reader_rejects_observation_from_another_trace() -> None:
+    item = ApiObservation(
+        id="obs-1",
+        trace_id="wrong-trace",
+        name="advance.done",
+        type="SPAN",
+    )
+
+    class ObservationsApi:
+        def get_many(self, **fields: object):
+            return SimpleNamespace(data=[item], meta=SimpleNamespace(cursor=None))
+
+    client = SimpleNamespace(api=SimpleNamespace(observations=ObservationsApi()))
+    reader = LangfuseTraceReader(client)  # type: ignore[arg-type]
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(ValueError, match="wrong-trace"):
+        await reader.read(["trace-1"], from_time=now, to_time=now)
 
 
 def test_span_lifecycle_is_confined_to_observability_package() -> None:
