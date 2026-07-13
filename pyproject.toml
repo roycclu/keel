@@ -1,0 +1,33 @@
+[project]
+name = "keel"
+version = "0.1.0"
+description = "Human-quality-gated agentic contribution pipelines. Phase 1: Wikipedia citation remediation."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "langfuse>=4.0,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[project.scripts]
+keel = "keel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
