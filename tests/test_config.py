@@ -78,3 +78,32 @@ def test_from_env_loads_langfuse_settings(monkeypatch, tmp_path):
     assert settings.langfuse_secret_key == "sk-test"
     assert settings.langfuse_base_url == "https://us.cloud.langfuse.com"
     assert settings.langfuse_environment == "test"
+
+
+def test_from_env_loads_web_context_settings(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KEEL_WEB_SEARCH_MODE=web\n"
+        "KEEL_WEB_CONTEXT_MAX_URLS=12\n"
+        "KEEL_WEB_CONTEXT_MAX_TOKENS=12000\n"
+        "KEEL_WEB_CONTEXT_MAX_TOKENS_PER_URL=768\n"
+        "KEEL_WEB_CONTEXT_MAX_SNIPPETS=24\n"
+        "KEEL_WEB_CONTEXT_MAX_SNIPPETS_PER_URL=4\n"
+        "KEEL_WEB_CONTEXT_THRESHOLD=balanced\n"
+        "KEEL_WEB_FETCH_FALLBACK_MAX_URLS=2\n"
+    )
+    names = [line.split("=", 1)[0] for line in env_file.read_text().splitlines()]
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("KEEL_ENV_FILE", str(env_file))
+
+    settings = Settings.from_env()
+
+    assert settings.web_search_mode == "web"
+    assert settings.web_context_max_urls == 12
+    assert settings.web_context_max_tokens == 12_000
+    assert settings.web_context_max_tokens_per_url == 768
+    assert settings.web_context_max_snippets == 24
+    assert settings.web_context_max_snippets_per_url == 4
+    assert settings.web_context_threshold == "balanced"
+    assert settings.web_fetch_fallback_max_urls == 2

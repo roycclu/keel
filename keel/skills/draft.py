@@ -14,29 +14,48 @@ from keel.skills.base import BaseSkill
 
 
 class DraftSource(BaseModel):
-    index: int  # position in the verified-evidence list
-    title: str
-    publisher: str | None = None
-    reliability: str
-    excerpt: str
+    """A verified source candidate presented to the citation drafter."""
+
+    index: int = Field(description="Stable position in the verified-evidence list.")
+    title: str = Field(description="Human-readable source title.")
+    publisher: str | None = Field(default=None, description="Source publisher, when known.")
+    reliability: str = Field(description="Previously assessed source-reliability level.")
+    excerpt: str = Field(description="Passage verified to support at least one atomic claim.")
 
 
 class DraftInput(BaseModel):
-    claim: str
-    context: str
-    sources: list[DraftSource]
+    """Verified evidence and context used to choose citations."""
+
+    claim: str = Field(description="Complete assertion that needs citation coverage.")
+    atomic_claims: list[str] = Field(
+        default_factory=list,
+        description="Independently verifiable parts that the selected sources must all cover.",
+    )
+    context: str = Field(description="Surrounding article text needed to assess citation fit.")
+    sources: list[DraftSource] = Field(description="Verified source candidates available to cite.")
 
 
 class CitationDraft(BaseModel):
-    chosen_source_indices: list[int] = Field(min_length=1)  # which sources to cite
-    edit_summary: str  # MediaWiki edit summary, e.g. "Add citation for <claim> (Keel)"
-    rationale: str  # why this sourcing resolves the tag; the human reviewer reads this
-    confidence: float = Field(ge=0.0, le=1.0)
+    """The model's source selection and reviewer-facing drafting rationale."""
+
+    chosen_source_indices: list[int] = Field(
+        min_length=1,
+        description="Indices of the verified sources selected to cover every atomic claim.",
+    )
+    edit_summary: str = Field(description="Concise, neutral MediaWiki edit summary.")
+    rationale: str = Field(
+        description="Reviewer-facing explanation of why the sourcing resolves the tag."
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence that the selected sources fully and appropriately cover the claim.",
+    )
 
 
 class DraftCitation(BaseSkill[DraftInput, CitationDraft]):
     name = "draft_citation"
-    version = "1"
+    version = "2"
     input_model = DraftInput
     output_model = CitationDraft
 
@@ -49,16 +68,18 @@ class DraftCitation(BaseSkill[DraftInput, CitationDraft]):
             LLMMessage(
                 role=Role.SYSTEM,
                 content=(
-                    "You select the best 1-2 verified sources to cite for a claim and write a "
-                    "concise, neutral edit summary and a rationale for a human reviewer. Prefer "
-                    "higher-reliability sources. Do NOT write any <ref> or template markup; only "
-                    "return the indices of the sources to cite plus the summary and rationale."
+                    "You select the verified sources needed to cover every atomic claim, up to "
+                    "five sources, and write a concise, neutral edit summary and rationale for a "
+                    "human reviewer. Prefer fewer higher-reliability sources, but do not omit a "
+                    "source required for claim coverage. Do NOT write any <ref> or template markup."
                 ),
             ),
             LLMMessage(
                 role=Role.USER,
                 content=(
-                    f"Claim:\n{inp.claim}\n\nContext:\n{inp.context}\n\nVerified sources:\n{listed}"
+                    f"Complete claim:\n{inp.claim}\n\nAtomic claims:\n"
+                    + "\n".join(f"- {claim}" for claim in inp.atomic_claims)
+                    + f"\n\nContext:\n{inp.context}\n\nVerified sources:\n{listed}"
                 ),
             ),
         ]

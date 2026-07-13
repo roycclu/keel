@@ -377,24 +377,54 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="keel", description="Wikipedia citation pipeline")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="keel",
+        description="Discover and resolve Wikipedia citation-needed tasks.",
+        epilog="""examples:
+  keel discover --limit 5 --tags-per-page 1
+  keel run --max-steps 10 --dry-run
+  keel status
+  keel workflow TASK_ID --watch
+  keel review --reviewer alice
+  keel traces TASK_ID
+  keel investigate TASK_ID --question "Why was this source rejected?"
 
-    p_disc = sub.add_parser("discover", help="find citation-needed tags")
+Run `keel COMMAND --help` for command-specific options.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True, title="commands", metavar="COMMAND")
+
+    p_disc = sub.add_parser(
+        "discover",
+        help="find citation-needed tags",
+        description="Find citation-needed tags and create tasks.",
+    )
     p_disc.add_argument("--limit", type=int, default=5, help="max pages to scan")
-    p_disc.add_argument("--tags-per-page", type=int, default=1)
+    p_disc.add_argument("--tags-per-page", type=int, default=1, help="max tasks to create per page")
 
-    p_run = sub.add_parser("run", help="drive actionable tasks")
-    p_run.add_argument("--max-steps", type=int, default=100)
+    p_run = sub.add_parser(
+        "run",
+        help="drive actionable tasks",
+        description="Advance actionable tasks through the workflow.",
+    )
+    p_run.add_argument("--max-steps", type=int, default=100, help="max workflow advances")
     p_run.add_argument("--dry-run", action="store_true", help="render + log edits, post nothing")
 
-    p_rev = sub.add_parser("review", help="human quality gate")
-    p_rev.add_argument("--reviewer", default="cli")
+    p_rev = sub.add_parser(
+        "review",
+        help="human quality gate",
+        description="Interactively approve or reject pending tasks.",
+    )
+    p_rev.add_argument("--reviewer", default="cli", help="reviewer name recorded in the audit")
 
-    sub.add_parser("status", help="show tasks by state")
+    sub.add_parser("status", help="show tasks by state", description="List task workflow status.")
 
-    p_workflow = sub.add_parser("workflow", help="show runbook step status")
+    p_workflow = sub.add_parser(
+        "workflow",
+        help="show runbook step status",
+        description="Show every workflow step for one task.",
+    )
     p_workflow.add_argument("task_id", help="full task ID or unique prefix")
     p_workflow.add_argument("--watch", action="store_true", help="refresh until terminal")
     p_workflow.add_argument("--json", action="store_true", help="emit the typed status as JSON")
@@ -405,15 +435,26 @@ def main() -> None:
         help="watch interval in seconds",
     )
 
-    p_traces = sub.add_parser("traces", help="show Langfuse trace IDs for a task")
+    p_traces = sub.add_parser(
+        "traces",
+        help="show Langfuse trace IDs for a task",
+        description="List the Langfuse traces correlated with one task.",
+    )
     p_traces.add_argument("task_id", help="full task ID or unique prefix")
 
     p_investigate = sub.add_parser(
-        "investigate", help="explain a decision from retained Langfuse traces"
+        "investigate",
+        help="explain a decision from retained Langfuse traces",
+        description="Answer a question using observations retained in Langfuse.",
     )
     p_investigate.add_argument("task_id", help="full task ID or unique prefix")
     p_investigate.add_argument("--question", required=True, help="decision question to answer")
 
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
     try:
         asyncio.run(_amain(args))

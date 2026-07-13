@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from keel.core.types import DecisionExplanation, TraceObservation
 from keel.llm.client import LLMMessage, Role
@@ -10,11 +10,19 @@ from keel.skills.base import BaseSkill
 
 
 class InvestigationInput(BaseModel):
-    task_id: str
-    question: str
-    observations: list[TraceObservation]
-    source_trace_ids: list[str]
-    idempotency_key: str
+    """Bounded retained evidence for explaining one past workflow decision."""
+
+    task_id: str = Field(description="Identifier of the task whose decision is being examined.")
+    question: str = Field(description="User's specific question about the past decision.")
+    observations: list[TraceObservation] = Field(
+        description="Selected trace records that may be used as explanation evidence."
+    )
+    source_trace_ids: list[str] = Field(
+        description="Trace identifiers from which the selected observations were read."
+    )
+    idempotency_key: str = Field(
+        description="Stable digest used to reuse an equivalent completed investigation."
+    )
 
 
 class ExplainDecision(BaseSkill[InvestigationInput, DecisionExplanation]):

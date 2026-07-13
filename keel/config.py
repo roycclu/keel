@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 
@@ -31,6 +31,14 @@ class Settings(BaseModel):
     # --- web research ---
     web_search_provider: str = "brave"  # adapter key; see tools/web.py
     web_search_api_key: str | None = None
+    web_search_mode: Literal["llm_context", "web"] = "llm_context"
+    web_context_max_urls: int = Field(default=10, ge=1, le=50)
+    web_context_max_tokens: int = Field(default=8192, ge=1024, le=32768)
+    web_context_max_tokens_per_url: int = Field(default=1024, ge=512, le=8192)
+    web_context_max_snippets: int = Field(default=30, ge=1, le=100)
+    web_context_max_snippets_per_url: int = Field(default=3, ge=1, le=100)
+    web_context_threshold: Literal["strict", "balanced", "lenient", "disabled"] = "strict"
+    web_fetch_fallback_max_urls: int = Field(default=3, ge=0, le=10)
 
     # --- execution ---
     http_timeout_s: float = 30.0
@@ -61,6 +69,37 @@ class Settings(BaseModel):
                 "KEEL_WEB_SEARCH_PROVIDER", cls.model_fields["web_search_provider"].default
             ),
             web_search_api_key=env.get("KEEL_WEB_SEARCH_API_KEY"),
+            web_search_mode=env.get(
+                "KEEL_WEB_SEARCH_MODE", cls.model_fields["web_search_mode"].default
+            ),
+            web_context_max_urls=env.get(
+                "KEEL_WEB_CONTEXT_MAX_URLS",
+                cls.model_fields["web_context_max_urls"].default,
+            ),
+            web_context_max_tokens=env.get(
+                "KEEL_WEB_CONTEXT_MAX_TOKENS",
+                cls.model_fields["web_context_max_tokens"].default,
+            ),
+            web_context_max_tokens_per_url=env.get(
+                "KEEL_WEB_CONTEXT_MAX_TOKENS_PER_URL",
+                cls.model_fields["web_context_max_tokens_per_url"].default,
+            ),
+            web_context_max_snippets=env.get(
+                "KEEL_WEB_CONTEXT_MAX_SNIPPETS",
+                cls.model_fields["web_context_max_snippets"].default,
+            ),
+            web_context_max_snippets_per_url=env.get(
+                "KEEL_WEB_CONTEXT_MAX_SNIPPETS_PER_URL",
+                cls.model_fields["web_context_max_snippets_per_url"].default,
+            ),
+            web_context_threshold=env.get(
+                "KEEL_WEB_CONTEXT_THRESHOLD",
+                cls.model_fields["web_context_threshold"].default,
+            ),
+            web_fetch_fallback_max_urls=env.get(
+                "KEEL_WEB_FETCH_FALLBACK_MAX_URLS",
+                cls.model_fields["web_fetch_fallback_max_urls"].default,
+            ),
             sqlite_path=env.get("KEEL_SQLITE_PATH", cls.model_fields["sqlite_path"].default),
             observability_backend=env.get(
                 "KEEL_OBSERVABILITY_BACKEND",

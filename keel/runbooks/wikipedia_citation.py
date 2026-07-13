@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import urlsplit
 
 from keel.core.errors import TargetOperationError
@@ -50,14 +51,21 @@ from keel.tools.wikipedia import (
     VerifyEditRequest,
     VerifyEditTool,
 )
-from keel.tools.web import WebSearchRequest, WebSearchTool
+from keel.tools.web import (
+    FetchUrlRequest,
+    FetchUrlTool,
+    SearchHit,
+    WebSearchRequest,
+    WebSearchTool,
+    select_relevant_passages,
+)
 from keel.tools.wikitext import find_citation_needed_tags, format_citation, render_diff
 from keel.wikipedia.models import WikiCitationDraft, WikiEditPayload, WikiLocator
 from keel.wikipedia.target import WikipediaTarget
 
 MIN_CONFIDENCE = 0.75  # matches the research gate in ARCHITECTURE.md #8.2
-MAX_SOURCES = 2
-SEARCH_K = 5
+MAX_SOURCES = 5
+SEARCH_K = 10
 MAX_HINTS = 2
 
 STEP_DISCOVER = WorkflowStepSpec(id="discover.opportunity", label="Discover opportunity", ordinal=0)
@@ -109,6 +117,56 @@ def _now() -> datetime:
 
 def _host(url: str) -> str:
     return urlsplit(url).netloc or None
+
+
+def _select_covering_sources(
+    evidence: list[Evidence], claims: list[str]
+) -> tuple[list[Source], list[Evidence]]:
+    """Greedily choose the fewest source URLs that cover every atomic claim."""
+
+    by_url: dict[str, list[Evidence]] = {}
+    for item in evidence:
+        by_url.setdefault(str(item.sources[0].url), []).append(item)
+    remaining = set(claims)
+    selected_urls: list[str] = []
+    while remaining and len(selected_urls) < MAX_SOURCES:
+        candidates = ((url, items) for url, items in by_url.items() if url not in selected_urls)
+        best_url, best_evidence = max(
+            candidates,
+            key=lambda candidate: len({item.claim for item in candidate[1]} & remaining),
+        )
+        covered = {item.claim for item in best_evidence} & remaining
+        if not covered:
+            break
+        selected_urls.append(best_url)
+        remaining -= covered
+    if remaining:
+        return [], []
+
+    sources: list[Source] = []
+    for url in selected_urls:
+        candidates = [item.sources[0] for item in by_url[url]]
+        passages = list(
+            dict.fromkeys(passage for source in candidates for passage in source.passages)
+        )
+        base = candidates[0]
+        methods = {source.retrieval_method for source in candidates}
+        sources.append(
+            Source(
+                url=base.url,
+                title=base.title,
+                publisher=base.publisher,
+                published=base.published,
+                accessed=base.accessed,
+                reliability=base.reliability,
+                excerpt=passages[0],
+                passages=passages,
+                retrieval_method=base.retrieval_method if len(methods) == 1 else "mixed",
+                content_hash=hashlib.sha256("\n\n".join(passages).encode()).hexdigest()[:16],
+            )
+        )
+    selected_evidence = [item for item in evidence if str(item.sources[0].url) in selected_urls]
+    return sources, selected_evidence
 
 
 class WikipediaCitationWorkflow:
@@ -246,7 +304,77 @@ class WikipediaCitationWorkflow:
             )
             await step.finish(WorkflowStepState.COMPLETED, claim.claim_text)
 
+        atomic_claims = list(dict.fromkeys(claim.atomic_claims or [claim.claim_text]))
+        coverage: dict[str, list[Evidence]] = {atomic: [] for atomic in atomic_claims}
         verified: list[Evidence] = []
+        seen_urls: set[str] = set()
+        fetched_urls = 0
+        fetch_url = FetchUrlTool()
+
+        async def assess(hit: SearchHit) -> Reliability:
+            async with track_step(task, ctx, STEP_ASSESS_SOURCE) as step:
+                judgment = await AssessSourceReliability().run(
+                    AssessInput(
+                        url=str(hit.url),
+                        title=hit.title,
+                        publisher=_host(str(hit.url)),
+                        excerpt="\n\n".join(hit.passages),
+                    ),
+                    sctx,
+                )
+                await step.finish(
+                    WorkflowStepState.COMPLETED,
+                    f"{judgment.reliability} {_host(str(hit.url))}",
+                )
+                return judgment.reliability
+
+        async def verify(
+            hit: SearchHit,
+            passages: list[str],
+            retrieval_method: Literal["llm_context", "web_search", "direct_fetch"],
+            reliability: Reliability,
+        ) -> None:
+            for atomic in (item for item in atomic_claims if not coverage[item]):
+                async with track_step(task, ctx, STEP_VERIFY_SOURCE) as step:
+                    support = await VerifyClaimSupport().run(
+                        VerifyInput(claim=atomic, source_passages=passages), sctx
+                    )
+                    await step.finish(
+                        WorkflowStepState.COMPLETED,
+                        f"supports={support.supports} confidence={support.confidence:.2f} "
+                        f"{_host(str(hit.url))}",
+                    )
+                if not support.supports or support.confidence < MIN_CONFIDENCE:
+                    continue
+                indices = [
+                    index
+                    for index in support.supporting_passage_indices
+                    if 0 <= index < len(passages)
+                ]
+                supporting = [passages[index] for index in indices] if indices else passages
+                digest = hashlib.sha256("\n\n".join(supporting).encode()).hexdigest()[:16]
+                evidence = Evidence(
+                    claim=atomic,
+                    sources=[
+                        Source(
+                            url=hit.url,
+                            title=hit.title,
+                            publisher=_host(str(hit.url)),
+                            accessed=_now(),
+                            reliability=reliability,
+                            excerpt=supporting[0],
+                            passages=supporting,
+                            retrieval_method=retrieval_method,
+                            content_hash=digest,
+                        )
+                    ],
+                    confidence=support.confidence,
+                    reasoning=support.reasoning,
+                    produced=self._prov(rid, "skill:verify_claim_support@2", hit.url),
+                )
+                coverage[atomic].append(evidence)
+                verified.append(evidence)
+
         for hint in claim.search_hints[:MAX_HINTS]:
             async with track_step(task, ctx, STEP_SEARCH) as step:
                 search = await WebSearchTool().call(WebSearchRequest(query=hint, k=SEARCH_K), tctx)
@@ -264,93 +392,97 @@ class WikipediaCitationWorkflow:
                     input={"query": hint, "k": SEARCH_K},
                     output=search.value.model_dump(mode="json"),
                 )
-            for h in search.value.hits:
-                async with track_step(task, ctx, STEP_VERIFY_SOURCE) as step:
-                    support = await VerifyClaimSupport().run(
-                        VerifyInput(claim=claim.claim_text, source_excerpt=h.snippet), sctx
-                    )
-                    await step.finish(
-                        WorkflowStepState.COMPLETED,
-                        f"supports={support.supports} confidence={support.confidence:.2f} "
-                        f"{_host(str(h.url))}",
-                    )
-                if not support.supports or support.confidence < MIN_CONFIDENCE:
+            for hit_result in search.value.hits:
+                url = str(hit_result.url)
+                if url in seen_urls:
                     continue
-                async with track_step(task, ctx, STEP_ASSESS_SOURCE) as step:
-                    judged = await AssessSourceReliability().run(
-                        AssessInput(
-                            url=str(h.url),
-                            title=h.title,
-                            publisher=_host(str(h.url)),
-                            excerpt=h.snippet,
-                        ),
-                        sctx,
-                    )
-                    await step.finish(
-                        WorkflowStepState.COMPLETED,
-                        f"{judged.reliability} {_host(str(h.url))}",
-                    )
-                verified.append(
-                    Evidence(
-                        claim=claim.claim_text,
-                        sources=[
-                            Source(
-                                url=h.url,
-                                title=h.title,
-                                publisher=_host(str(h.url)),
-                                accessed=_now(),
-                                reliability=judged.reliability,
-                                excerpt=h.snippet,
-                            )
-                        ],
-                        confidence=support.confidence,
-                        reasoning=support.reasoning,
-                        produced=self._prov(rid, "skill:verify_claim_support@1", h.url),
-                    )
-                )
-            if any(e.sources[0].reliability == Reliability.HIGH for e in verified):
-                break  # enough: we have at least one high-reliability supporting source
+                seen_urls.add(url)
+                reliability = await assess(hit_result)
+                if reliability != Reliability.HIGH:
+                    continue
 
-        strong = [e for e in verified if e.sources[0].reliability == Reliability.HIGH]
-        if not strong:
+                await verify(
+                    hit_result,
+                    hit_result.passages,
+                    hit_result.retrieval_method,
+                    reliability,
+                )
+                missing = [atomic for atomic in atomic_claims if not coverage[atomic]]
+                if missing and fetched_urls < ctx.settings.web_fetch_fallback_max_urls:
+                    fetched_urls += 1
+                    fetched = await fetch_url.call(FetchUrlRequest(url=hit_result.url), tctx)
+                    if fetched.ok and fetched.value is not None:
+                        direct_passages = select_relevant_passages(fetched.value.text, missing)
+                        ctx.observer.event(
+                            "research.source.enriched",
+                            observation_type="retriever",
+                            input={"url": url, "claims": missing},
+                            output={"passages": direct_passages},
+                        )
+                        if direct_passages:
+                            await verify(
+                                hit_result,
+                                direct_passages,
+                                "direct_fetch",
+                                reliability,
+                            )
+                if all(coverage.values()):
+                    break
+            if all(coverage.values()):
+                break
+
+        missing = [atomic for atomic, evidence in coverage.items() if not evidence]
+        if missing:
             transition(
                 task,
                 S.ABANDONED,
                 runbook=self._rb,
                 run_id=rid,
                 step="research",
-                reason="no high-reliability source supports the claim",
+                reason="no high-reliability source coverage for: " + "; ".join(missing),
             )
             return Advance(status="ok", reason="insufficient sourcing")
 
         task.evidence = verified
-        chosen = (strong + [e for e in verified if e not in strong])[:MAX_SOURCES]
+        chosen_sources, picked_evidence = _select_covering_sources(verified, atomic_claims)
+        if not chosen_sources:
+            transition(
+                task,
+                S.ABANDONED,
+                runbook=self._rb,
+                run_id=rid,
+                step="research",
+                reason="verified evidence exceeds citation source limit",
+            )
+            return Advance(status="ok", reason="too many sources required")
 
         # --- draft ---
         transition(task, S.DRAFTED, runbook=self._rb, run_id=rid, step="draft")
         draft_sources = [
             DraftSource(
-                index=i,
-                title=e.sources[0].title,
-                publisher=e.sources[0].publisher,
-                reliability=str(e.sources[0].reliability),
-                excerpt=e.sources[0].excerpt,
+                index=index,
+                title=source.title,
+                publisher=source.publisher,
+                reliability=str(source.reliability),
+                excerpt="\n\n".join(source.passages),
             )
-            for i, e in enumerate(chosen)
+            for index, source in enumerate(chosen_sources)
         ]
         async with track_step(task, ctx, STEP_DRAFT) as step:
             cd: CitationDraft = await DraftCitation().run(
-                DraftInput(claim=claim.claim_text, context=claim.context, sources=draft_sources),
+                DraftInput(
+                    claim=claim.claim_text,
+                    atomic_claims=atomic_claims,
+                    context=claim.context,
+                    sources=draft_sources,
+                ),
                 sctx,
             )
             await step.finish(
                 WorkflowStepState.COMPLETED,
-                f"selected {len(cd.chosen_source_indices)} source(s)",
+                f"selected {len(chosen_sources)} source(s)",
             )
-        picked = [chosen[i] for i in cd.chosen_source_indices if 0 <= i < len(chosen)] or [
-            chosen[0]
-        ]
-        ref_wikitext = "".join(format_citation(e.sources[0]) for e in picked)
+        ref_wikitext = "".join(format_citation(source) for source in chosen_sources)
 
         draft = WikiCitationDraft(
             title=snapshot.title,
@@ -383,7 +515,9 @@ class WikipediaCitationWorkflow:
             if issues:
                 detail = "; ".join(f"{i.field}:{i.code}" for i in issues)
                 await step.finish(WorkflowStepState.FAILED, detail)
-                transition(task, S.FAILED, runbook=self._rb, run_id=rid, step="draft", reason=detail)
+                transition(
+                    task, S.FAILED, runbook=self._rb, run_id=rid, step="draft", reason=detail
+                )
                 return Advance(status="fatal_error", reason="payload failed validation")
             await step.finish(WorkflowStepState.COMPLETED, "payload valid")
 
@@ -391,18 +525,17 @@ class WikipediaCitationWorkflow:
             task_id=task.id,
             target=self._target.id,
             payload=payload,
-            evidence=picked,
+            evidence=picked_evidence,
             rationale=cd.rationale,
             reversible=True,
             est_impact=Impact.LOW,
-            produced=self._prov(rid, "skill:draft_citation@1", payload.new_wikitext),
+            produced=self._prov(rid, "skill:draft_citation@2", payload.new_wikitext),
         )
 
         # --- gate ---
         diff = render_diff(snapshot.wikitext, payload.new_wikitext, filename=snapshot.title)
         sources_digest = "\n".join(
-            f"- ({e.sources[0].reliability}) {e.sources[0].title} {e.sources[0].url}"
-            for e in picked
+            f"- ({source.reliability}) {source.title} {source.url}" for source in chosen_sources
         )
         async with track_step(task, ctx, STEP_REVIEW) as step:
             brief = await SummarizeForReview().run(
@@ -482,7 +615,12 @@ class WikipediaCitationWorkflow:
                     return Advance(status="retryable_error", error=exc.error)
                 await step.finish(WorkflowStepState.FAILED, exc.error.code)
                 transition(
-                    task, S.FAILED, runbook=self._rb, run_id=rid, step="submit", reason=exc.error.code
+                    task,
+                    S.FAILED,
+                    runbook=self._rb,
+                    run_id=rid,
+                    step="submit",
+                    reason=exc.error.code,
                 )
                 return Advance(status="fatal_error", error=exc.error)
             await step.finish(

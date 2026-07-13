@@ -6,23 +6,33 @@ the review surface, and to surface anything that should give them pause.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from keel.llm.client import LLMMessage, Role
 from keel.skills.base import BaseSkill
 
 
 class ReviewInput(BaseModel):
-    article_title: str
-    claim: str
-    rationale: str
-    diff: str
-    sources_digest: str  # compact list: reliability, publisher, url
+    """Complete bounded context for preparing a human review brief."""
+
+    article_title: str = Field(description="Title of the Wikipedia article being changed.")
+    claim: str = Field(description="Claim receiving the proposed citation.")
+    rationale: str = Field(description="Drafter's explanation for the proposed sourcing.")
+    diff: str = Field(description="Rendered unified diff of the proposed wikitext change.")
+    sources_digest: str = Field(
+        description="Compact source list containing reliability, publisher, and URL."
+    )
 
 
 class ReviewBrief(BaseModel):
-    brief: str  # 2-4 sentences: what changes, why, how well sourced
-    risk_flags: list[str]  # e.g. "single source", "low-reliability source", "contentious topic"
+    """Concise decision support for the human quality gate."""
+
+    brief: str = Field(
+        description="Two to four sentences explaining the change and sourcing quality."
+    )
+    risk_flags: list[str] = Field(
+        description="Concrete concerns the reviewer should check, or an empty list when none exist."
+    )
 
 
 class SummarizeForReview(BaseSkill[ReviewInput, ReviewBrief]):

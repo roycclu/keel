@@ -15,7 +15,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from keel.core.errors import KeelError
 from keel.core.states import TaskState, Transition
@@ -40,10 +40,12 @@ class Provenance(BaseModel):
     should yield the same output, which the eval harness relies on.
     """
 
-    produced_by: str  # "skill:verify_claim_support@1" | "tool:web_search" | "human:alice"
-    at: datetime
-    run_id: str  # ties to the observability trace
-    inputs_hash: str
+    produced_by: str = Field(
+        description="Versioned skill, tool, or human identifier that produced the value."
+    )
+    at: datetime = Field(description="UTC time at which the value was produced.")
+    run_id: str = Field(description="Run identifier linking the value to its observability trace.")
+    inputs_hash: str = Field(description="Stable digest of the inputs used to produce the value.")
 
 
 # --- evidence --------------------------------------------------------------------
@@ -75,66 +77,102 @@ class WorkflowStepState(StrEnum):
 class WorkflowStepSpec(BaseModel):
     """One stable, ordered step in a workflow's operator-facing manifest."""
 
-    id: str
-    label: str
-    ordinal: int = Field(ge=0)
+    id: str = Field(description="Stable machine-readable identifier for the workflow step.")
+    label: str = Field(description="Human-readable operator label for the workflow step.")
+    ordinal: int = Field(ge=0, description="Zero-based display order within the workflow.")
 
 
 class WorkflowStepExecution(BaseModel):
     """A durable attempt at one workflow step, independent of lifecycle state."""
 
-    id: str
-    task_id: TaskId
-    run_id: str
-    step_id: str
-    label: str
-    ordinal: int = Field(ge=0)
-    attempt: int = Field(ge=1)
-    state: WorkflowStepState
-    started_at: datetime
-    finished_at: datetime | None = None
-    detail: str | None = None
+    id: str = Field(description="Unique identifier for this execution attempt.")
+    task_id: TaskId = Field(description="Task advanced by this workflow-step attempt.")
+    run_id: str = Field(description="Run identifier associated with this attempt's trace.")
+    step_id: str = Field(description="Stable workflow-step identifier from the manifest.")
+    label: str = Field(description="Human-readable workflow-step label captured for audit.")
+    ordinal: int = Field(ge=0, description="Zero-based display order captured from the manifest.")
+    attempt: int = Field(ge=1, description="One-based attempt number for this task and step.")
+    state: WorkflowStepState = Field(description="Current or terminal state of this attempt.")
+    started_at: datetime = Field(description="UTC time at which this attempt started.")
+    finished_at: datetime | None = Field(
+        default=None, description="UTC completion time, or null while the attempt is active."
+    )
+    detail: str | None = Field(default=None, description="Optional operator-facing status detail.")
 
 
 class Source(BaseModel):
-    url: HttpUrl
-    title: str
-    publisher: str | None = None
-    published: date | None = None
-    accessed: datetime
-    reliability: Reliability = Reliability.UNKNOWN
-    excerpt: str  # the passage that supports the claim
+    """A retrieved source with bounded passages and an assessed reliability level."""
+
+    url: HttpUrl = Field(description="Canonical URL used to retrieve or identify the source.")
+    title: str = Field(description="Human-readable source title.")
+    publisher: str | None = Field(default=None, description="Source publisher, when known.")
+    published: date | None = Field(default=None, description="Source publication date, when known.")
+    accessed: datetime = Field(description="UTC time at which Keel accessed the source.")
+    reliability: Reliability = Field(
+        default=Reliability.UNKNOWN, description="Reliability level assigned to the source."
+    )
+    excerpt: str = Field(description="Compatibility alias for the first supporting passage.")
+    passages: list[str] = Field(
+        default_factory=list, description="Deduplicated source passages relevant to the claim."
+    )
+    retrieval_method: Literal["llm_context", "web_search", "direct_fetch", "mixed"] = Field(
+        default="web_search",
+        description="Method or combination of methods used to retrieve the passages.",
+    )
+    content_hash: str | None = Field(
+        default=None, description="Optional digest of retrieved content for provenance checks."
+    )
+
+    @model_validator(mode="after")
+    def normalize_passages(self) -> "Source":
+        values = [self.excerpt, *self.passages]
+        self.passages = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if not self.passages:
+            raise ValueError("a source requires at least one supporting passage")
+        self.excerpt = self.passages[0]
+        return self
 
 
 class Evidence(BaseModel):
     """Researched support for one atomic claim."""
 
-    claim: str
-    sources: list[Source]
-    confidence: float = Field(ge=0.0, le=1.0)  # calibrated; see the eval harness
-    reasoning: str
-    produced: Provenance
+    claim: str = Field(description="Atomic factual claim supported by this evidence bundle.")
+    sources: list[Source] = Field(description="Sources verified as supporting the claim.")
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Calibrated confidence that the sources support the full claim."
+    )
+    reasoning: str = Field(description="Concise explanation connecting the sources to the claim.")
+    produced: Provenance = Field(description="Provenance of the evidence judgment.")
 
 
 class TraceObservation(BaseModel):
     """The bounded telemetry observation shape used by decision investigations."""
 
-    id: str
-    trace_id: str
-    name: str
-    type: str
-    input: object | None = None
-    output: object | None = None
-    metadata: object | None = None
-    start_time: datetime | None = None
+    id: str = Field(description="Identifier of the retained observation.")
+    trace_id: str = Field(description="Identifier of the trace containing this observation.")
+    name: str = Field(description="Instrumented operation name.")
+    type: str = Field(description="Observability backend's observation type.")
+    input: object | None = Field(default=None, description="Bounded recorded operation input.")
+    output: object | None = Field(default=None, description="Bounded recorded operation output.")
+    metadata: object | None = Field(
+        default=None, description="Additional retained observation metadata."
+    )
+    start_time: datetime | None = Field(
+        default=None, description="Recorded UTC operation start time."
+    )
 
 
 class DecisionExplanation(BaseModel):
     """A post-hoc explanation grounded only in retained trace observations."""
 
-    answer: str
-    relevant_observation_ids: list[str]
-    limitations: list[str] = Field(default_factory=list)
+    answer: str = Field(description="Evidence-grounded answer to the investigation question.")
+    relevant_observation_ids: list[str] = Field(
+        description="Observation identifiers directly supporting the answer."
+    )
+    limitations: list[str] = Field(
+        default_factory=list,
+        description="Missing information or ambiguity limiting the explanation.",
+    )
 
 
 # --- the five nouns --------------------------------------------------------------
@@ -143,13 +181,19 @@ class DecisionExplanation(BaseModel):
 class Opportunity(BaseModel, Generic[Locator]):
     """A located unit of possible work."""
 
-    id: str
-    target: TargetId
-    locator: Locator
-    kind: str  # "citation_needed" in Phase 1
-    summary: str  # human-readable one-liner
-    salience: float = Field(ge=0.0, le=1.0)  # discovery's prioritization hint
-    discovered: Provenance
+    id: str = Field(description="Stable identifier for the discovered opportunity.")
+    target: TargetId = Field(description="Target adapter responsible for the opportunity.")
+    locator: Locator = Field(
+        description="Target-shaped data needed to locate the opportunity again."
+    )
+    kind: str = Field(description="Workflow-specific opportunity kind, currently citation_needed.")
+    summary: str = Field(description="Human-readable one-line description of the opportunity.")
+    salience: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Discovery-time prioritization score, where higher is more salient.",
+    )
+    discovered: Provenance = Field(description="Provenance of the discovery event.")
 
 
 class Proposal(BaseModel, Generic[Payload]):
@@ -160,25 +204,31 @@ class Proposal(BaseModel, Generic[Payload]):
     it; they validate and send it verbatim.
     """
 
-    task_id: TaskId
-    target: TargetId
-    payload: Payload
-    evidence: list[Evidence]
-    rationale: str  # justification the human reviewer reads
-    reversible: bool  # can the target undo this via its API?
-    est_impact: Impact
-    produced: Provenance
+    task_id: TaskId = Field(description="Task for which this change was proposed.")
+    target: TargetId = Field(description="Target adapter that can validate and submit the payload.")
+    payload: Payload = Field(description="Rendered target-native change body ready for validation.")
+    evidence: list[Evidence] = Field(
+        description="Verified evidence supporting the proposed change."
+    )
+    rationale: str = Field(description="Justification presented to the human reviewer.")
+    reversible: bool = Field(description="Whether the target API can undo the proposed change.")
+    est_impact: Impact = Field(description="Estimated consequence if the change is incorrect.")
+    produced: Provenance = Field(description="Provenance of the completed proposal.")
 
 
 class Submission(BaseModel):
     """The record of what was actually sent and what came back."""
 
-    task_id: TaskId
-    external_ref: str | None = None  # revision id
-    request_digest: str  # exactly what we sent (audit)
-    response_digest: str  # exactly what came back (audit)
-    submitted: Provenance
-    outcome: Literal["accepted", "rejected", "reverted", "error"]
+    task_id: TaskId = Field(description="Task whose proposal was submitted.")
+    external_ref: str | None = Field(
+        default=None, description="Target-assigned identifier, such as a revision ID."
+    )
+    request_digest: str = Field(description="Digest of the exact submitted request for audit.")
+    response_digest: str = Field(description="Digest of the exact target response for audit.")
+    submitted: Provenance = Field(description="Provenance of the submission attempt.")
+    outcome: Literal["accepted", "rejected", "reverted", "error"] = Field(
+        description="Normalized outcome of the target submission."
+    )
 
 
 # --- the gate --------------------------------------------------------------------
@@ -197,23 +247,33 @@ class GateRequest(BaseModel):
     the rendered diff, and the evidence. Populated by the `summarize_for_review` skill.
     """
 
-    task_id: TaskId
-    brief: str  # summarize_for_review output
-    diff: str  # rendered unified wikitext diff
-    evidence_digest: str  # compact source list with reliability
-    created_at: datetime
-    sla_deadline: datetime | None = None  # auto-abandon if unreviewed past this
+    task_id: TaskId = Field(description="Task parked while awaiting a gate decision.")
+    brief: str = Field(description="Concise review brief produced for the human reviewer.")
+    diff: str = Field(description="Rendered unified diff of the proposed change.")
+    evidence_digest: str = Field(
+        description="Compact source list including reliability information."
+    )
+    created_at: datetime = Field(description="UTC time at which review was requested.")
+    sla_deadline: datetime | None = Field(
+        default=None,
+        description="Optional UTC deadline after which the unreviewed task is abandoned.",
+    )
 
 
 class GateDecision(BaseModel):
     """A human (or, later, an auto-gate) decision re-entering the state machine."""
 
-    task_id: TaskId
-    verdict: GateVerdict
-    reviewer: str  # "human:alice" | "auto:policy@1"
-    notes: str | None = None
-    edited_payload: dict | None = None  # present iff verdict == APPROVE_WITH_EDITS
-    decided: Provenance
+    task_id: TaskId = Field(description="Task receiving the gate decision.")
+    verdict: GateVerdict = Field(description="Reviewer disposition for the proposed change.")
+    reviewer: str = Field(description="Versioned human or policy identifier making the decision.")
+    notes: str | None = Field(
+        default=None, description="Optional reviewer explanation or guidance."
+    )
+    edited_payload: dict | None = Field(
+        default=None,
+        description="Replacement payload supplied only with an approve-with-edits verdict.",
+    )
+    decided: Provenance = Field(description="Provenance of the gate decision.")
 
 
 # --- the lifecycle object --------------------------------------------------------
@@ -229,17 +289,32 @@ class Task(BaseModel, Generic[Locator, Payload]):
         so two workers can never advance the same task concurrently.
     """
 
-    id: TaskId
-    target: TargetId
-    state: TaskState = TaskState.DISCOVERED
-    opportunity: Opportunity[Locator]
-    evidence: list[Evidence] = Field(default_factory=list)
-    proposal: Proposal[Payload] | None = None
-    submission: Submission | None = None
-    pending_gate: GateRequest | None = None  # set on GATE_PENDING, cleared on decision
-    gate_decisions: list[GateDecision] = Field(default_factory=list)
-    history: list[Transition] = Field(default_factory=list)
-    version: int = 0
+    id: TaskId = Field(description="Stable sortable identifier for the persisted task.")
+    target: TargetId = Field(description="Target adapter that owns this task.")
+    state: TaskState = Field(default=TaskState.DISCOVERED, description="Current lifecycle state.")
+    opportunity: Opportunity[Locator] = Field(description="Original discovered work item.")
+    evidence: list[Evidence] = Field(
+        default_factory=list, description="Append-only verified evidence collected for the task."
+    )
+    proposal: Proposal[Payload] | None = Field(
+        default=None, description="Rendered proposal once drafting has completed."
+    )
+    submission: Submission | None = Field(
+        default=None, description="Submission record once the proposal reaches the target."
+    )
+    pending_gate: GateRequest | None = Field(
+        default=None, description="Active gate request while the task is waiting for review."
+    )
+    gate_decisions: list[GateDecision] = Field(
+        default_factory=list, description="Append-only history of review decisions."
+    )
+    history: list[Transition] = Field(
+        default_factory=list, description="Append-only lifecycle transition audit log."
+    )
+    version: int = Field(
+        default=0,
+        description="Optimistic-lock version incremented after each persisted update.",
+    )
 
 
 # --- runbook I/O envelope --------------------------------------------------------
@@ -250,19 +325,29 @@ RunbookOutput = TypeVar("RunbookOutput", bound=BaseModel)
 class StepMetrics(BaseModel):
     """Per-run cost/latency, recorded for observability and eval (#13)."""
 
-    tokens_in: int = 0
-    tokens_out: int = 0
-    tool_calls: int = 0
-    llm_calls: int = 0
-    latency_ms: float = 0.0
-    cost_usd: float = 0.0  # ~0 on the local gateway, but kept for provider swaps
+    tokens_in: int = Field(default=0, description="Input tokens consumed during the step.")
+    tokens_out: int = Field(default=0, description="Output tokens produced during the step.")
+    tool_calls: int = Field(default=0, description="Deterministic tool calls made during the step.")
+    llm_calls: int = Field(default=0, description="LLM generation calls made during the step.")
+    latency_ms: float = Field(default=0.0, description="Elapsed step time in milliseconds.")
+    cost_usd: float = Field(default=0.0, description="Estimated provider cost in US dollars.")
 
 
 class RunbookResult(BaseModel, Generic[RunbookOutput]):
     """The single return contract for every runbook. The loop branches only on `status`."""
 
-    status: Literal["ok", "gate_pending", "retryable_error", "fatal_error"]
-    output: RunbookOutput | None = None
-    gate: GateRequest | None = None  # populated iff status == "gate_pending"
-    error: KeelError | None = None  # populated iff status endswith "_error"
-    metrics: StepMetrics = Field(default_factory=StepMetrics)
+    status: Literal["ok", "gate_pending", "retryable_error", "fatal_error"] = Field(
+        description="Disposition that determines the executor's next action."
+    )
+    output: RunbookOutput | None = Field(
+        default=None, description="Typed output for a successful step."
+    )
+    gate: GateRequest | None = Field(
+        default=None, description="Review request populated only when status is gate_pending."
+    )
+    error: KeelError | None = Field(
+        default=None, description="Typed failure populated only for an error status."
+    )
+    metrics: StepMetrics = Field(
+        default_factory=StepMetrics, description="Cost, usage, and latency recorded for the step."
+    )

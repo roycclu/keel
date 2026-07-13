@@ -22,6 +22,7 @@ _CN_RE = re.compile(
     re.IGNORECASE,
 )
 _HEADING_RE = re.compile(r"^\s*(={2,6})\s*(.+?)\s*\1\s*$", re.MULTILINE)
+_REF_TAG_RE = re.compile(r"</?ref\b[^>]*>", re.IGNORECASE)
 
 
 def format_citation(source: Source, *, style: str = "cs1") -> str:
@@ -61,10 +62,14 @@ def render_diff(before: str, after: str, *, filename: str = "article") -> str:
 class TagHit(BaseModel):
     """A deterministically located [citation needed] tag. No LLM involved."""
 
-    markup: str  # exact template text, used later by replace_nth
-    occurrence: int = Field(ge=0)  # 0-based index among identical markups on the page
-    section: str | None  # nearest preceding heading
-    window: str  # surrounding wikitext (claim usually precedes the tag)
+    markup: str = Field(description="Exact matched citation-needed template text.")
+    occurrence: int = Field(
+        ge=0, description="Zero-based occurrence among identical template strings in the article."
+    )
+    section: str | None = Field(description="Nearest preceding section heading, when present.")
+    window: str = Field(
+        description="Bounded surrounding wikitext used to identify the attached claim."
+    )
 
 
 def find_citation_needed_tags(wikitext: str, *, window: int = 400) -> list[TagHit]:
@@ -108,3 +113,12 @@ def replace_nth(text: str, needle: str, replacement: str, n: int) -> str:
         if start == -1:
             raise ValueError(f"occurrence {n} of {needle!r} not found")
     return text[:start] + replacement + text[start + len(needle) :]
+
+
+def ref_tags_balanced(text: str) -> bool:
+    """Count paired ref tags while ignoring valid self-closing named references."""
+
+    tags = _REF_TAG_RE.findall(text)
+    openings = sum(not tag.startswith("</") and not re.search(r"/\s*>$", tag) for tag in tags)
+    closings = sum(tag.startswith("</") for tag in tags)
+    return openings == closings

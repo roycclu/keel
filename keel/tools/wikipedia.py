@@ -92,19 +92,27 @@ def _provenance(tool: str, run_id: str, inputs: object) -> Provenance:
 
 
 class PageHit(BaseModel):
-    title: str
-    pageid: int
+    """A Wikipedia page returned by citation-needed discovery."""
+
+    title: str = Field(description="Canonical article title.")
+    pageid: int = Field(description="Stable MediaWiki page identifier.")
 
 
 class FindCitationNeededRequest(BaseModel):
+    """Parameters for discovering articles with citation-needed templates."""
+
     # Default query finds mainspace pages transcluding the citation-needed template.
-    srsearch: str = 'insource:"Citation needed"'
-    limit: int = Field(default=10, ge=1, le=50)
-    namespace: int = 0
+    srsearch: str = Field(
+        default='insource:"Citation needed"', description="MediaWiki search expression to execute."
+    )
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum pages to return.")
+    namespace: int = Field(default=0, description="MediaWiki namespace number to search.")
 
 
 class FindCitationNeededResponse(BaseModel):
-    pages: list[PageHit]
+    """Wikipedia pages matching the discovery query."""
+
+    pages: list[PageHit] = Field(description="Matching pages in MediaWiki result order.")
 
 
 class FindCitationNeededTool:
@@ -145,8 +153,12 @@ class FindCitationNeededTool:
 
 
 class FetchArticleRequest(BaseModel):
-    title: str
-    revid: int | None = None  # None => latest
+    """Request for a current or pinned Wikipedia article snapshot."""
+
+    title: str = Field(description="Wikipedia article title to fetch.")
+    revid: int | None = Field(
+        default=None, description="Specific revision to fetch, or null for the latest revision."
+    )
 
 
 class FetchArticleTool:
@@ -201,11 +213,17 @@ class FetchArticleTool:
 
 
 class SubmitEditRequest(BaseModel):
-    payload: WikiEditPayload
-    task_id: str
-    idempotency_key: str  # hash(task_id, payload); recorded for audit + dedup
-    bot: bool = False
-    minor: bool = True
+    """An approved, rendered Wikipedia edit ready for deterministic submission."""
+
+    payload: WikiEditPayload = Field(description="Validated MediaWiki-native change body.")
+    task_id: str = Field(description="Task authorizing this submission.")
+    idempotency_key: str = Field(
+        description="Stable digest of task and payload recorded for audit and deduplication."
+    )
+    bot: bool = Field(
+        default=False, description="Whether to mark the MediaWiki edit as a bot edit."
+    )
+    minor: bool = Field(default=True, description="Whether to mark the MediaWiki edit as minor.")
 
 
 class SubmitEditTool:
@@ -289,14 +307,18 @@ class SubmitEditTool:
 
 
 class VerifyEditRequest(BaseModel):
-    title: str
-    revid: int
+    """Request to verify the current status of one submitted revision."""
+
+    title: str = Field(description="Wikipedia article title containing the submitted revision.")
+    revid: int = Field(description="Submitted MediaWiki revision identifier to verify.")
 
 
 class VerifyEditResponse(BaseModel):
-    present: bool  # the revision exists
-    is_current: bool  # it is the page's latest revision
-    reverted: bool  # a later revision carries a revert tag
+    """Normalized post-submission status of a Wikipedia revision."""
+
+    present: bool = Field(description="Whether the submitted revision still exists.")
+    is_current: bool = Field(description="Whether the submitted revision is the article's latest.")
+    reverted: bool = Field(description="Whether a later revision carries a recognized revert tag.")
 
 
 class VerifyEditTool:

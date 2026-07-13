@@ -25,6 +25,7 @@ from keel.tools.wikipedia import (
     SubmitEditRequest,
     SubmitEditTool,
 )
+from keel.tools.wikitext import ref_tags_balanced
 from keel.tools.wikitext import replace_nth
 from keel.wikipedia.models import WikiCitationDraft, WikiEditPayload, WikiLocator
 
@@ -125,7 +126,7 @@ class WikipediaTarget:
             issues.append(
                 ValidationIssue(field="new_wikitext", code="empty", message="empty wikitext")
             )
-        if payload.new_wikitext.count("<ref") != payload.new_wikitext.count("</ref>"):
+        if not ref_tags_balanced(payload.new_wikitext):
             issues.append(
                 ValidationIssue(
                     field="new_wikitext",

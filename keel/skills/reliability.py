@@ -5,7 +5,7 @@ Target-agnostic: any target that needs sourcing reuses this unchanged.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from keel.core.types import Reliability
 from keel.llm.client import LLMMessage, Role
@@ -13,15 +13,21 @@ from keel.skills.base import BaseSkill
 
 
 class AssessInput(BaseModel):
-    url: str
-    title: str
-    publisher: str | None = None
-    excerpt: str
+    """Source identity and content used for a reliability assessment."""
+
+    url: str = Field(description="Canonical URL of the source being assessed.")
+    title: str = Field(description="Human-readable title of the source.")
+    publisher: str | None = Field(default=None, description="Source publisher, when known.")
+    excerpt: str = Field(description="Bounded source passage available for assessment.")
 
 
 class ReliabilityJudgment(BaseModel):
-    reliability: Reliability
-    reasoning: str
+    """Wikipedia-style reliability classification with a concise justification."""
+
+    reliability: Reliability = Field(
+        description="Reliability level assigned under Wikipedia norms."
+    )
+    reasoning: str = Field(description="Publisher- and evidence-based justification for the level.")
 
 
 class AssessSourceReliability(BaseSkill[AssessInput, ReliabilityJudgment]):

@@ -78,6 +78,13 @@ KEEL_LLM_HTTP_REFERER=<optional-project-url>
 KEEL_LLM_APP_TITLE=Keel
 ```
 
+Brave LLM Context is the default research mode. It returns query-relevant page passages
+grouped by source URL instead of a single search-result description. Context size is
+bounded by token, URL, and passage counts; promising high-reliability sources that still
+have incomplete coverage are fetched directly for readable HTML or PDF text. Set
+`KEEL_WEB_SEARCH_MODE=web` to use standard Web Search with extra snippets explicitly.
+See [.env.example](.env.example) for the context and direct-fetch limits.
+
 Keel exports OpenTelemetry-native traces to Langfuse when these values are configured:
 
 ```dotenv
@@ -88,7 +95,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_TRACING_ENVIRONMENT=development
 ```
 
-Traces contain prompts, structured model outputs, search snippets, bounded tool
+Traces contain prompts, structured model outputs, source-scoped passages, bounded tool
 results, and workflow decisions. Keep the Langfuse project private and configure its
 retention accordingly. API credentials and authorization headers are never included.
 
