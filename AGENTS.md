@@ -4,15 +4,17 @@ Coding-behavior contract for any agent (or human) working in this repo. Read thi
 
 ## Inherited rules (from ~/AGENTS.md)
 
-This file inherits the global rules in the home-directory agent file. They apply here in full:
+<!-- BEGIN INHERITED AGENTS.MD -->
+General Guidelines
 
-@/home/roy/AGENTS.md
-
-Restated inline so they are never missed:
-
-- Never use the em dash. Use a plain dash instead.
-- When writing commit messages, never auto-add the agent name as co-author.
-- Never manually modify CHANGELOG.md or any file marked as auto-generated.
+- Never use the em dash. Use plain dash instead.
+- When writing commit messages. Never auto-add your agent name as co-author
+- Never manually modify CHANGELOG.md files or any files that are marked as auto-generated
+- Extend before you create. Prefer extending an existing state, dataclass, interface, or protocol over introducing a new one.
+- Ignore development cost. Optimize for correctness, clarity, and long-term maintainability. Do not optimize for speed of implementation.
+- Strict typed contracts at every boundary. Every boundary - tool, skill, runbook, target API - has an explicit, validated contract.
+- Prefer brevity. Use the smallest, well-structured solution over long-form scripting when both solve the problem correctly.
+<!-- END INHERITED AGENTS.MD -->
 
 ## Shared coding philosophy
 
