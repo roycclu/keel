@@ -276,6 +276,11 @@ class SubmitEditTool:
                     "bot": 1 if req.bot else 0,
                     "minor": 1 if req.minor else 0,
                     "assert": "user",
+                    **(
+                        {"assertuser": ctx.settings.wiki_expected_user}
+                        if ctx.settings.wiki_expected_user
+                        else {}
+                    ),
                     "token": token,
                 }
             )

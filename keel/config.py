@@ -26,6 +26,8 @@ class Settings(BaseModel):
     # --- Wikipedia (Phase 1 writes go to the test wiki only) ---
     wiki_api_base: str = "https://test.wikipedia.org/w/api.php"
     wiki_oauth_token: str | None = None  # required only when actually submitting
+    wiki_expected_user: str | None = None
+    wiki_submission_mode: Literal["inline", "bundle"] = "inline"
     user_agent: str = "Keel/0.1 (human-supervised; contact roycclu@gmail.com)"
 
     # --- web research ---
@@ -68,6 +70,11 @@ class Settings(BaseModel):
             llm_app_title=env.get("KEEL_LLM_APP_TITLE"),
             wiki_api_base=env.get("KEEL_WIKI_API_BASE", cls.model_fields["wiki_api_base"].default),
             wiki_oauth_token=env.get("KEEL_WIKI_OAUTH_TOKEN"),
+            wiki_expected_user=env.get("KEEL_WIKI_EXPECTED_USER"),
+            wiki_submission_mode=env.get(
+                "KEEL_WIKI_SUBMISSION_MODE",
+                cls.model_fields["wiki_submission_mode"].default,
+            ),
             web_search_provider=env.get(
                 "KEEL_WEB_SEARCH_PROVIDER", cls.model_fields["web_search_provider"].default
             ),

@@ -93,6 +93,49 @@ operations receive three total attempts, including the initial attempt. These de
 can be changed with `KEEL_DISCOVERY_TAGS_PER_PAGE`, `KEEL_RESEARCH_CANDIDATE_LIMIT`, and
 `KEEL_OPERATION_MAX_ATTEMPTS`.
 
+### Submit approved edits from a local machine
+
+When the remote runtime cannot write to Wikipedia, set
+`KEEL_WIKI_SUBMISSION_MODE=bundle` there. The executor will continue discovery and
+drafting but leave approved tasks parked for an explicit handoff. Export one approved
+task to a credential-free, integrity-checked JSON bundle:
+
+```bash
+keel export-submission <task-id> --output submission.json
+scp submission.json your-local-machine:/path/to/keel/
+```
+
+On the local clone, configure the same Wikipedia API endpoint plus the authenticated
+account. The OAuth token remains only in the local `.env` and is never written into a
+bundle or receipt:
+
+```dotenv
+KEEL_WIKI_API_BASE=https://test.wikipedia.org/w/api.php
+KEEL_WIKI_OAUTH_TOKEN=<local-token>
+KEEL_WIKI_EXPECTED_USER=Martianmarshall
+```
+
+First preview and recheck the pinned revision without posting. Use a separate receipt
+path for the real run because transfer files are not overwritten implicitly:
+
+```bash
+keel submit-bundle submission.json --output dry-run-receipt.json --dry-run
+keel submit-bundle submission.json --output receipt.json
+```
+
+The real command displays the exact diff, requires the task prefix as confirmation,
+uses MediaWiki `assertuser`, checkpoints the accepted revision before verification,
+and will not submit it again if restarted with the same receipt path. Copy both files
+back and import the typed result into Keel:
+
+```bash
+scp receipt.json your-remote-runtime:/path/to/keel/
+keel import-submission submission.json receipt.json
+```
+
+Bundles expire after 24 hours. Export a fresh bundle rather than bypassing expiry or
+revision precondition failures.
+
 Brave LLM Context is the default research mode. It returns query-relevant page passages
 grouped by source URL instead of a single search-result description. Context size is
 bounded by token, URL, and passage counts; promising high-reliability sources that still

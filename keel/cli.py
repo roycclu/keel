@@ -16,11 +16,13 @@ import asyncio
 import hashlib
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from keel.config import Settings
-from keel.core.runtime import Budget, RunContext
+from keel.core.runtime import Budget, RunContext, ToolContext
 from keel.core.states import TERMINAL, TaskState as S
 from keel.core.states import transition
 from keel.core.protocols import QuerySpec
@@ -51,7 +53,15 @@ from keel.runbooks.status import build_workflow_status, render_workflow_status
 from keel.runbooks.wikipedia_citation import WikipediaCitationWorkflow
 from keel.skills.investigate import ExplainDecision, InvestigationInput
 from keel.store.sqlite_store import SqliteStateStore
-from keel.wikipedia.models import wiki_task_type
+from keel.wikipedia.models import WikiSubmissionBundle, WikiSubmissionReceipt, wiki_task_type
+from keel.wikipedia.offline_submission import (
+    OfflineSubmissionError,
+    export_bundle,
+    import_receipt,
+    preview_bundle,
+    submit_bundle,
+    write_transfer,
+)
 from keel.wikipedia.target import WikipediaTarget
 
 
@@ -116,9 +126,28 @@ class App:
         print(f"\n{created} task(s) created; {duplicates} duplicate(s) skipped.")
 
     async def run(self, max_steps: int) -> None:
-        executor = Executor(self.store, self.workflow, self._ctx)
+        actionable = [S.DISCOVERED] if self.settings.wiki_submission_mode == "bundle" else None
+        executor = Executor(self.store, self.workflow, self._ctx, actionable=actionable)
         steps = await executor.run(self.target.id, max_steps=max_steps)
         print(f"executor took {steps} step(s).")
+
+    async def export_submission(self, reference: str, output: Path) -> None:
+        task = await self._load_task(reference)
+        bundle = export_bundle(task, self.settings)
+        write_transfer(output, bundle)
+        print(f"exported {bundle.bundle_id[:12]}  {output}")
+
+    async def import_submission(self, bundle_path: Path, receipt_path: Path) -> None:
+        bundle = WikiSubmissionBundle.model_validate_json(bundle_path.read_text())
+        receipt = WikiSubmissionReceipt.model_validate_json(receipt_path.read_text())
+        task = await self._load_task(bundle.task_id)
+        expected = task.version
+        changed = import_receipt(task, bundle, receipt)
+        if changed:
+            await self.store.save(task, expected)
+            print(f"imported {receipt.status}  task={task.id}  state={task.state}")
+        else:
+            print(f"already imported  task={task.id}  state={task.state}")
 
     async def review(self, reviewer: str) -> None:
         pending = await self.store.query(
@@ -199,7 +228,9 @@ class App:
             executions = await self.store.list_steps(task.id)
             workflow = build_workflow_status(task, self.workflow.steps, executions)
             step = workflow.current_step or "complete"
-            print(f"{task.id[:8]}  {str(task.state):13}  {step:28}  {task.opportunity.summary}{ref}")
+            print(
+                f"{task.id[:8]}  {str(task.state):13}  {step:28}  {task.opportunity.summary}{ref}"
+            )
         print("\n" + "  ".join(f"{k}={v}" for k, v in sorted(by_state.items())))
 
     async def workflow_status(
@@ -354,6 +385,47 @@ async def _amain(args: argparse.Namespace) -> None:
     if getattr(args, "dry_run", False):
         settings = settings.model_copy(update={"dry_run_submit": True})
     async with httpx.AsyncClient() as http:
+        if args.cmd == "submit-bundle":
+            bundle = WikiSubmissionBundle.model_validate_json(args.bundle.read_text())
+            target = WikipediaTarget(settings)
+            observer = JsonlObserver(run_id=f"offline-submit:{bundle.bundle_id[:16]}")
+            tool_ctx = ToolContext(
+                run_id=f"offline-submit:{bundle.bundle_id[:16]}",
+                http=http,
+                settings=settings,
+                observer=observer,
+                auth=target.auth(),
+            )
+            if args.output.exists():
+                receipt = await submit_bundle(
+                    bundle,
+                    tool_ctx,
+                    args.output,
+                    dry_run=args.dry_run,
+                )
+                print(f"receipt: {args.output}  status={receipt.status}")
+                return
+            diff = await preview_bundle(bundle, tool_ctx)
+            print(f"endpoint: {bundle.wiki_api_base}")
+            print(f"user: {settings.wiki_expected_user or '(not configured)'}")
+            print(f"task: {bundle.task_id}")
+            print(f"summary: {bundle.payload.summary}\n")
+            print(diff or "(no textual change)")
+            if not args.dry_run:
+                expected = bundle.task_id[:8]
+                answer = await asyncio.to_thread(
+                    input, f"\nType {expected} to submit this approved edit: "
+                )
+                if answer.strip() != expected:
+                    raise RuntimeError("submission cancelled")
+            receipt = await submit_bundle(
+                bundle,
+                tool_ctx,
+                args.output,
+                dry_run=args.dry_run,
+            )
+            print(f"receipt: {args.output}  status={receipt.status}")
+            return
         app = App(settings, http)
         if args.cmd == "discover":
             await app.discover(args.limit, args.tags_per_page)
@@ -374,6 +446,10 @@ async def _amain(args: argparse.Namespace) -> None:
             await app.traces(args.task_id)
         elif args.cmd == "investigate":
             await app.investigate(args.task_id, args.question)
+        elif args.cmd == "export-submission":
+            await app.export_submission(args.task_id, args.output)
+        elif args.cmd == "import-submission":
+            await app.import_submission(args.bundle, args.receipt)
 
 
 def _positive_float(value: str) -> float:
@@ -395,6 +471,9 @@ def _build_parser() -> argparse.ArgumentParser:
   keel review --reviewer alice
   keel traces TASK_ID
   keel investigate TASK_ID --question "Why was this source rejected?"
+  keel export-submission TASK_ID --output submission.json
+  keel submit-bundle submission.json --output receipt.json --dry-run
+  keel import-submission submission.json receipt.json
 
 Run `keel COMMAND --help` for command-specific options.""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -463,6 +542,33 @@ Run `keel COMMAND --help` for command-specific options.""",
     p_investigate.add_argument("task_id", help="full task ID or unique prefix")
     p_investigate.add_argument("--question", required=True, help="decision question to answer")
 
+    p_export = sub.add_parser(
+        "export-submission",
+        help="export an approved edit for offline submission",
+        description="Write a typed, credential-free bundle for an approved task.",
+    )
+    p_export.add_argument("task_id", help="full task ID or unique prefix")
+    p_export.add_argument("--output", required=True, type=Path, help="new bundle JSON path")
+
+    p_submit = sub.add_parser(
+        "submit-bundle",
+        help="submit a bundle from an authenticated machine",
+        description="Preview, recheck, submit, and verify an exported Wikipedia edit.",
+    )
+    p_submit.add_argument("bundle", type=Path, help="bundle JSON path")
+    p_submit.add_argument("--output", required=True, type=Path, help="new receipt JSON path")
+    p_submit.add_argument(
+        "--dry-run", action="store_true", help="preview and check without posting"
+    )
+
+    p_import = sub.add_parser(
+        "import-submission",
+        help="apply a local submission receipt",
+        description="Validate a bundle and receipt, then advance the matching task.",
+    )
+    p_import.add_argument("bundle", type=Path, help="original bundle JSON path")
+    p_import.add_argument("receipt", type=Path, help="returned receipt JSON path")
+
     return parser
 
 
@@ -476,6 +582,10 @@ def main() -> None:
     except KeyError as exc:
         parser.error(str(exc.args[0]))
     except RuntimeError as exc:
+        parser.error(str(exc))
+    except OfflineSubmissionError as exc:
+        parser.error(f"{exc.error.code}: {exc.error.message}")
+    except (ValidationError, OSError) as exc:
         parser.error(str(exc))
 
 
