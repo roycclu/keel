@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960" role="img" aria-labelledby="title description">
+  <title id="title">Keel workflow status in a terminal</title>
+  <desc id="description">A citation workflow with nine completed steps waiting at the human approval gate.</desc>
+  <defs>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16231f"/>
+      <stop offset="1" stop-color="#0b1110"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#07100d" flood-opacity="0.42"/>
+    </filter>
+    <style>
+      .mono { font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace; font-size: 19px; }
+      .muted { fill: #7f918a; }
+      .text { fill: #d8e2dc; }
+      .green { fill: #7ee2a8; }
+      .amber { fill: #f6c76b; }
+      .blue { fill: #80c7ff; }
+      .detail { fill: #98aaa2; font-size: 17px; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="960" fill="#e8eee9"/>
+  <path d="M0 0h1440v250L0 570z" fill="#d5e4d9" opacity="0.78"/>
+  <rect x="64" y="48" width="1312" height="864" rx="18" fill="url(#frame)" filter="url(#shadow)"/>
+  <rect x="64" y="48" width="1312" height="54" rx="18" fill="#1e2d28"/>
+  <rect x="64" y="84" width="1312" height="18" fill="#1e2d28"/>
+  <circle cx="96" cy="75" r="7" fill="#f07178"/>
+  <circle cx="120" cy="75" r="7" fill="#f6c76b"/>
+  <circle cx="144" cy="75" r="7" fill="#7ee2a8"/>
+  <text x="720" y="82" text-anchor="middle" class="mono muted" font-size="15">keel - workflow</text>
+
+  <g class="mono">
+    <text x="100" y="140" class="green">$ keel workflow 286519d5</text>
+    <text x="100" y="181" class="text">286519d583334017b95ea994e9abba12  gate_pending</text>
+    <text x="100" y="213" class="text">[citation needed] in Phthalate §Alternatives</text>
+
+    <text x="100" y="263" class="green">[x]</text><text x="145" y="263" class="text">Discover opportunity</text><text x="580" y="263" class="green">completed</text><text x="730" y="263" class="muted">0.0s</text>
+    <text x="100" y="298" class="green">[x]</text><text x="145" y="298" class="text">Fetch current article</text><text x="580" y="298" class="green">completed</text><text x="730" y="298" class="muted">0.2s</text>
+    <text x="100" y="333" class="green">[x]</text><text x="145" y="333" class="text">Locate uncited claim</text><text x="580" y="333" class="green">completed</text><text x="730" y="333" class="muted">1.8s</text>
+    <text x="100" y="368" class="green">[x]</text><text x="145" y="368" class="text">Search candidate sources</text><text x="580" y="368" class="green">completed</text><text x="730" y="368" class="muted">0.5s</text><text x="820" y="368" class="blue">queries=2</text>
+    <text x="100" y="403" class="green">[x]</text><text x="145" y="403" class="text">Verify claim support</text><text x="580" y="403" class="green">completed</text><text x="730" y="403" class="muted">1.6s</text><text x="820" y="403" class="blue">checks=3</text>
+    <text x="100" y="438" class="green">[x]</text><text x="145" y="438" class="text">Assess source reliability</text><text x="580" y="438" class="green">completed</text><text x="730" y="438" class="muted">1.9s</text>
+    <text x="100" y="473" class="green">[x]</text><text x="145" y="473" class="text">Draft citation</text><text x="580" y="473" class="green">completed</text><text x="730" y="473" class="muted">2.8s</text>
+    <text x="100" y="508" class="green">[x]</text><text x="145" y="508" class="text">Render and validate edit</text><text x="580" y="508" class="green">completed</text><text x="730" y="508" class="muted">0.0s</text>
+    <text x="100" y="543" class="green">[x]</text><text x="145" y="543" class="text">Prepare human review</text><text x="580" y="543" class="green">completed</text><text x="730" y="543" class="muted">3.4s</text>
+    <text x="100" y="578" class="amber">[w]</text><text x="145" y="578" class="text">Await gate decision</text><text x="580" y="578" class="amber">waiting</text>
+    <text x="145" y="610" class="detail">awaiting human review</text>
+    <text x="100" y="650" class="muted">[ ]</text><text x="145" y="650" class="muted">Recheck submission conditions</text><text x="580" y="650" class="muted">pending</text>
+    <text x="100" y="685" class="muted">[ ]</text><text x="145" y="685" class="muted">Submit edit</text><text x="580" y="685" class="muted">pending</text>
+    <text x="100" y="720" class="muted">[ ]</text><text x="145" y="720" class="muted">Verify submitted edit</text><text x="580" y="720" class="muted">pending</text>
+
+    <line x1="100" y1="760" x2="1340" y2="760" stroke="#2c4038"/>
+    <text x="100" y="807" class="text">9 of 13 steps completed</text>
+    <text x="100" y="850" class="detail">Task state, step executions, counters, and gate status are persisted in SQLite.</text>
+  </g>
+</svg>

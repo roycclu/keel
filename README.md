@@ -1,149 +1,203 @@
 # Keel
 
-**An open-source framework for human-quality-gated agentic task pipelines.**
+Keel turns Wikipedia `[citation needed]` tags into durable, human-reviewed tasks.
+Each task follows a versioned runbook whose steps, decisions, retries, and target
+revisions are persisted and visible to the operator.
 
-Agent are good at researching and synthesizing. Deterministic runbook is good at producing reliable results.
+![Keel workflow waiting for human review](docs/images/workflow-status.svg)
 
-Keel splits every task into an *agentic* phase (find the gap, research it, draft the fix) and a *deterministic* phase (validate,gate, submit), and puts a human quality gate where needed. 
+The current target is `test.wikipedia.org`. Keel discovers citation gaps, researches
+candidate sources with an LLM, renders a deterministic edit, waits for human approval,
+submits the edit, and verifies the resulting revision.
 
-## First Target - Wikipedia Citation Automation
+## Quick start
 
-The first target is Wikipedia `[citation needed]` remediation. The architecture
-is designed so that adding a second target (GitHub issues, OSM, OpenFoodFacts,
-ArXiv errata) is a *plugin*, not a fork.
-
-## Design tenets
-
-1. **Discovery is agentic; execution is deterministic.** LLM reasoning is confined
-   to proposing work and drafting artifacts. Every side-effecting operation is a
-   typed tool with no model in its hot path.
-2. **The runbook is the unit of trust, not the agent.** A runbook is a named,
-   versioned, deterministic state transition with explicit preconditions, typed
-   I/O, and a quality gate.
-3. **Every pipeline is restartable and inspectable.** State lives in a durable
-   store, not in an agent's context window.
-4. **Human review is a first-class state, not a callback.**
-5. **The target is a plugin behind a protocol.** Target-specific knowledge lives
-   in its own module; the core has zero imports from any target.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
-[AGENTS.md](AGENTS.md) for the coding-behavior contract.
-
-## Layout
-
-```
-keel/            repo root: packaging, docs, tests
-└── keel/        the importable package
-    ├── core/          types, protocols, state machine, runtime
-    ├── gates/         quality-gate policy and providers
-    ├── llm/           LLM client (OpenAI-compatible)
-    ├── skills/        agentic phases: locate, draft, verify, review, reliability
-    ├── tools/         deterministic tools: web, wikipedia, wikitext
-    ├── runbooks/      wikipedia_citation runbook + executor
-    ├── store/         durable state (sqlite)
-    ├── observability/ tracing/observer
-    └── wikipedia/     WikipediaTarget plugin
-```
-
-## Install
+Keel requires Python 3.12 or newer.
 
 ```bash
+git clone git@github.com:roycclu/keel.git
+cd keel
+
 uv venv .venv
 uv pip install --python .venv/bin/python -e '.[dev]'
 source .venv/bin/activate
-```
 
-Requires Python >= 3.12.
-
-## Usage
-
-Create the local environment file, then add the LLM API key, Brave Search API key,
-and Langfuse project keys:
-
-```bash
 cp .env.example .env
 $EDITOR .env
-keel --help
 ```
 
-Any OpenAI-compatible Chat Completions provider can be selected with the LLM base URL.
-For example, OpenRouter uses a provider-qualified model slug and supports optional app
-attribution headers:
+At minimum, configure OpenAI and Brave Search:
 
 ```dotenv
-KEEL_LLM_BASE_URL=https://openrouter.ai/api/v1
-KEEL_LLM_MODEL=<provider>/<model>
-KEEL_LLM_API_KEY=<openrouter-key>
-KEEL_LLM_HTTP_REFERER=<optional-project-url>
-KEEL_LLM_APP_TITLE=Keel
+KEEL_LLM_API_KEY=<openai-api-key>
+KEEL_WEB_SEARCH_API_KEY=<brave-api-key>
 ```
 
-Discovery scans five pages by default and creates up to five tasks for the distinct
-`[citation needed]` tags on each page. The per-page value accepts 1 through 10:
+Discover work and advance it to the human gate:
 
 ```bash
+keel discover --limit 5
+keel run --max-steps 10
+keel status
+```
+
+Inspect one task and watch its runbook progress:
+
+```bash
+keel workflow <task-id>
+keel workflow <task-id> --watch
+keel workflow <task-id> --json
+```
+
+Review proposed edits interactively:
+
+```bash
+keel review --reviewer alice
+```
+
+Approved tasks become actionable. Run the executor again to submit and verify them:
+
+```bash
+keel run --max-steps 10
+```
+
+Use `--dry-run` when you want to exercise submission without posting to Wikipedia.
+Live submission requires `KEEL_WIKI_OAUTH_TOKEN`; research and review do not.
+
+## How it works
+
+```mermaid
+flowchart LR
+    D[Discover citation tags] --> T[(Task in SQLite)]
+    T --> E[Executor]
+    E --> R[Versioned runbook]
+    R --> G{Human gate}
+    G -->|approve| S[Submit edit]
+    G -->|reject| X[Rejected]
+    S --> V[Verify revision]
+    V --> Z[Verified]
+    R -. persist each step .-> T
+    G -. persist decision .-> T
+    V -. persist result .-> T
+```
+
+The executor does not ask an open-ended agent what to do next. It loads the oldest
+actionable task, selects the runbook branch for the task's current state, executes that
+branch, and persists the result with optimistic locking.
+
+### Runbooks
+
+A runbook is a named, versioned state transition. The Wikipedia implementation is
+[`WikipediaCitationWorkflow`](keel/runbooks/wikipedia_citation.py). Its `advance`
+method has three executable branches:
+
+| Starting state | Runbook branch | Result |
+| --- | --- | --- |
+| `discovered` | Research, verify evidence, draft, render | `gate_pending`, `abandoned`, or `failed` |
+| `approved` | Recheck the article and submit the edit | `submitted`, `abandoned`, or `failed` |
+| `submitted` | Verify the target revision | `verified`, `reverted`, or `failed` |
+
+Human review sits between the first and second branches. Approval moves a task from
+`gate_pending` to `approved`; rejection moves it to the terminal `rejected` state.
+
+### Steps
+
+A step is one persisted, operator-visible execution inside a runbook. The workflow
+declares 13 stable step specifications:
+
+| Phase | Steps |
+| --- | --- |
+| Discovery | Discover opportunity |
+| Research | Fetch article, locate claim, search sources, verify support, assess reliability |
+| Draft | Draft citation, render and validate edit, prepare human review |
+| Gate | Await gate decision |
+| Submit | Recheck submission conditions, submit edit |
+| Verify | Verify submitted edit |
+
+Step executions record state, timing, detail, and repetition count. Repetition counters
+describe work performed inside a task:
+
+- `queries=N` is the number of source-search queries.
+- `candidates=N` is the number of candidate sources assessed for reliability.
+- `checks=N` is the number of claim-support checks.
+- `retry attempt N` is separate and appears only after a transient workflow failure.
+
+The defaults are five citation tasks per scanned page, five fully assessed source
+candidates per task, and three total attempts for a transient operation, including the
+initial attempt. See [`.env.example`](.env.example) for the corresponding limits.
+
+## Operator workflow
+
+A normal run is a short control loop:
+
+```bash
+# 1. Create durable tasks from citation-needed tags.
 keel discover --limit 5 --tags-per-page 5
-keel run --dry-run
+
+# 2. Research and draft until tasks reach a gate or terminal state.
+keel run --max-steps 10
+
+# 3. Inspect the queue and one task's complete runbook.
+keel status
+keel workflow <task-id>
+
+# 4. Approve, reject, or skip each proposed edit.
+keel review --reviewer alice
+
+# 5. Submit approved work and verify resulting revisions.
+keel run --max-steps 10
 ```
 
-Rescanning the same article revision does not duplicate existing opportunities.
-Research pools results from up to two search hints, then performs full reliability and
-claim-support evaluation on at most five candidate sources per task. Retryable workflow
-operations receive three total attempts, including the initial attempt. These defaults
-can be changed with `KEEL_DISCOVERY_TAGS_PER_PAGE`, `KEEL_RESEARCH_CANDIDATE_LIMIT`, and
-`KEEL_OPERATION_MAX_ATTEMPTS`.
+`--max-steps` limits workflow advances, not the internal source checks shown by
+`keel workflow`. A gate-pending task is intentionally not actionable until a reviewer
+records a decision.
 
-### Submit approved edits from a local machine
+## Architecture
 
-When the remote runtime cannot write to Wikipedia, set
-`KEEL_WIKI_SUBMISSION_MODE=bundle` there. The executor will continue discovery and
-drafting but leave approved tasks parked for an explicit handoff. Export one approved
-task to a credential-free, integrity-checked JSON bundle:
+| Component | Responsibility |
+| --- | --- |
+| [`Executor`](keel/runbooks/executor.py) | Select actionable tasks, enforce retry scheduling, persist each advance |
+| [`WikipediaCitationWorkflow`](keel/runbooks/wikipedia_citation.py) | Declare steps and implement state-specific runbook branches |
+| [`SqliteStateStore`](keel/store/sqlite_store.py) | Persist tasks, transitions, retries, and step executions with compare-and-swap updates |
+| [`skills`](keel/skills) | Perform schema-validated LLM reasoning without network or target credentials |
+| [`tools`](keel/tools) | Perform typed search, fetch, rendering, and target API operations |
+| [`WikipediaTarget`](keel/wikipedia/target.py) | Parse opportunities, enforce target policy, render payloads, and submit edits |
+| [`observability`](keel/observability) | Emit JSONL or OpenTelemetry-native Langfuse traces |
 
-```bash
-keel export-submission <task-id> --output submission.json
-scp submission.json your-local-machine:/path/to/keel/
-```
+The capability boundary is explicit:
 
-On the local clone, configure the same Wikipedia API endpoint plus the authenticated
-account. The OAuth token remains only in the local `.env` and is never written into a
-bundle or receipt:
+- A `SkillContext` contains the LLM but no HTTP client or target credentials.
+- A `ToolContext` contains HTTP and target authentication but no LLM.
+- Only the approved submit branch can reach the side-effecting Wikipedia write tool.
+- SQLite is the source of truth; traces explain execution but do not control it.
 
-```dotenv
-KEEL_WIKI_API_BASE=https://test.wikipedia.org/w/api.php
-KEEL_WIKI_OAUTH_TOKEN=<local-token>
-KEEL_WIKI_EXPECTED_USER=Martianmarshall
-```
+For the complete type system, state graph, plugin protocols, and design rationale, see
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For repository coding rules, see
+[`AGENTS.md`](AGENTS.md).
 
-First preview and recheck the pinned revision without posting. Use a separate receipt
-path for the real run because transfer files are not overwritten implicitly:
+## Configuration
 
-```bash
-keel submit-bundle submission.json --output dry-run-receipt.json --dry-run
-keel submit-bundle submission.json --output receipt.json
-```
+Keel defaults to the OpenAI Chat Completions API and accepts any compatible provider
+through `KEEL_LLM_BASE_URL`. Brave LLM Context is the default retrieval mode; standard
+Brave Web Search can be selected with `KEEL_WEB_SEARCH_MODE=web`.
 
-The real command displays the exact diff, requires the task prefix as confirmation,
-uses MediaWiki `assertuser`, checkpoints the accepted revision before verification,
-and will not submit it again if restarted with the same receipt path. Copy both files
-back and import the typed result into Keel:
+Common settings:
 
-```bash
-scp receipt.json your-remote-runtime:/path/to/keel/
-keel import-submission submission.json receipt.json
-```
+| Variable | Purpose |
+| --- | --- |
+| `KEEL_LLM_API_KEY` | LLM authentication |
+| `KEEL_LLM_MODEL` | Structured-reasoning model |
+| `KEEL_WEB_SEARCH_API_KEY` | Brave Search authentication |
+| `KEEL_DISCOVERY_TAGS_PER_PAGE` | Maximum tasks created per scanned page |
+| `KEEL_RESEARCH_CANDIDATE_LIMIT` | Maximum candidate sources assessed per task |
+| `KEEL_OPERATION_MAX_ATTEMPTS` | Total attempts allowed for transient failures |
+| `KEEL_SQLITE_PATH` | Durable SQLite task store |
+| `KEEL_WIKI_OAUTH_TOKEN` | Required only for live submission |
+| `KEEL_OBSERVABILITY_BACKEND` | `jsonl` or `langfuse` |
 
-Bundles expire after 24 hours. Export a fresh bundle rather than bypassing expiry or
-revision precondition failures.
+## Observability
 
-Brave LLM Context is the default research mode. It returns query-relevant page passages
-grouped by source URL instead of a single search-result description. Context size is
-bounded by token, URL, and passage counts; promising high-reliability sources that still
-have incomplete coverage are fetched directly for readable HTML or PDF text. Set
-`KEEL_WEB_SEARCH_MODE=web` to use standard Web Search with extra snippets explicitly.
-See [.env.example](.env.example) for the context and direct-fetch limits.
-
-Keel exports OpenTelemetry-native traces to Langfuse when these values are configured:
+Set the following values to export OpenTelemetry-native traces to Langfuse:
 
 ```dotenv
 KEEL_OBSERVABILITY_BACKEND=langfuse
@@ -153,35 +207,18 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_TRACING_ENVIRONMENT=development
 ```
 
-Traces contain prompts, structured model outputs, source-scoped passages, bounded tool
-results, and workflow decisions. Keep the Langfuse project private and configure its
-retention accordingly. API credentials and authorization headers are never included.
-
-Inspect one task's runbook steps once, continuously, or as typed JSON:
-
-```bash
-keel workflow <task-id>
-keel workflow <task-id> --watch
-keel workflow <task-id> --json
-```
-
-List the deterministic Langfuse trace IDs associated with a task:
+List the deterministic trace IDs associated with a task:
 
 ```bash
 keel traces <task-id>
 ```
 
-Ask an on-demand question about a past decision:
+Ask a focused question about a retained decision:
 
 ```bash
 keel investigate <task-id> \
   --question "Why did the workflow reject these sources?"
 ```
-
-The investigation reads only relevant retained observations. Its idempotency key is
-derived from the task, source trace IDs, normalized question, and investigator
-version. Repeating the same question reuses the Langfuse result instead of calling
-OpenAI again.
 
 ## Development
 
