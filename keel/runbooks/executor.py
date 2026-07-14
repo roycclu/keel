@@ -22,14 +22,21 @@ MakeContext = Callable[[Task], RunContext]
 
 
 class Executor:
-    def __init__(self, store: StateStore, workflow: Workflow, make_ctx: MakeContext) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        workflow: Workflow,
+        make_ctx: MakeContext,
+        actionable: list[TaskState] | None = None,
+    ) -> None:
         self._store = store
         self._workflow = workflow
         self._make_ctx = make_ctx
+        self._actionable = ACTIONABLE if actionable is None else actionable
 
     async def run_once(self, target: str) -> bool:
         """Advance one task by one checkpoint. Returns False when idle."""
-        task = await self._store.load_next_actionable(target, ACTIONABLE)
+        task = await self._store.load_next_actionable(target, self._actionable)
         if task is None:
             return False
         expected = task.version
@@ -42,9 +49,7 @@ class Executor:
                 if error is None:
                     raise RuntimeError("retryable workflow outcome is missing its typed error")
                 checkpoint = task.state
-                task.retry_count = (
-                    task.retry_count + 1 if task.retry_state == checkpoint else 1
-                )
+                task.retry_count = task.retry_count + 1 if task.retry_state == checkpoint else 1
                 task.retry_state = checkpoint
                 task.last_error = error
                 if task.retry_count >= ctx.settings.operation_max_attempts:

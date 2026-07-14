@@ -113,3 +113,18 @@ def test_from_env_loads_web_context_settings(monkeypatch, tmp_path):
     assert settings.discovery_tags_per_page == 7
     assert settings.research_candidate_limit == 5
     assert settings.operation_max_attempts == 3
+
+
+def test_from_env_loads_offline_submission_settings(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KEEL_WIKI_SUBMISSION_MODE=bundle\nKEEL_WIKI_EXPECTED_USER=Martianmarshall\n"
+    )
+    monkeypatch.setenv("KEEL_ENV_FILE", str(env_file))
+    monkeypatch.delenv("KEEL_WIKI_SUBMISSION_MODE", raising=False)
+    monkeypatch.delenv("KEEL_WIKI_EXPECTED_USER", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.wiki_submission_mode == "bundle"
+    assert settings.wiki_expected_user == "Martianmarshall"

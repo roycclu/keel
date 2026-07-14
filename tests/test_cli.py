@@ -8,6 +8,7 @@ def test_top_level_help_lists_commands_and_examples() -> None:
 
     assert "keel run --max-steps 10 --dry-run" in help_text
     assert "keel workflow TASK_ID --watch" in help_text
+    assert "keel export-submission TASK_ID --output submission.json" in help_text
     assert "Run `keel COMMAND --help`" in help_text
 
 
@@ -29,3 +30,17 @@ def test_discovery_tag_limit_is_bounded() -> None:
     assert parser.parse_args(["discover", "--tags-per-page", "5"]).tags_per_page == 5
     with pytest.raises(SystemExit):
         parser.parse_args(["discover", "--tags-per-page", "11"])
+
+
+def test_offline_submission_commands_have_typed_paths() -> None:
+    parser = _build_parser()
+
+    export = parser.parse_args(["export-submission", "abc", "--output", "bundle.json"])
+    submit = parser.parse_args(
+        ["submit-bundle", "bundle.json", "--output", "receipt.json", "--dry-run"]
+    )
+    imported = parser.parse_args(["import-submission", "bundle.json", "receipt.json"])
+
+    assert export.output.name == "bundle.json"
+    assert submit.dry_run is True
+    assert imported.receipt.name == "receipt.json"
