@@ -2,11 +2,11 @@
 
 **An open-source framework for human-quality-gated agentic task pipelines.**
 
-Agents are good at discovery and drafting. They are bad at being trusted with an
-irreversible `POST`. Keel splits every task into an *agentic* phase
-(find the gap, research it, draft the fix) and a *deterministic* phase (validate,
-gate, submit), and puts a human quality gate on the seam between them. Nothing
-reaches a public commons without passing human review.
+Agent are good at researching and synthesizing. Deterministic runbook is good at producing reliable results.
+
+Keel splits every task into an *agentic* phase (find the gap, research it, draft the fix) and a *deterministic* phase (validate,gate, submit), and puts a human quality gate where needed. 
+
+## First Target - Wikipedia Citation Automation
 
 The first target is Wikipedia `[citation needed]` remediation. The architecture
 is designed so that adding a second target (GitHub issues, OSM, OpenFoodFacts,
